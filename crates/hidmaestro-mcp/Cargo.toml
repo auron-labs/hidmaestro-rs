@@ -1,0 +1,16 @@
+[package]
+name = "hidmaestro-mcp"
+description = "MCP stdio server that lets LLM agents drive HIDMaestro virtual gamepads."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hidmaestro-mcp"
+path = "src/main.rs"
+
+[dependencies]
+hidmaestro = { path = "../hidmaestro" }
+serde.workspace = true
+serde_json.workspace = true

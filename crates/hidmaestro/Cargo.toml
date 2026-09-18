@@ -1,0 +1,13 @@
+[package]
+name = "hidmaestro"
+description = "Client for the HIDMaestro virtual game-controller driver: spawn virtual controllers and submit gamepad state for end-to-end tests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

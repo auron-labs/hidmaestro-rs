@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>hidmaestro-bridge</AssemblyName>
+    <RootNamespace>HIDMaestro.Bridge</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Point at a local HIDMaestro checkout:
+           dotnet build /p:HMRepoRoot=C:\src\HIDMaestro
+         or set the HM_REPO_ROOT env var. -->
+    <HMRepoRoot Condition="'$(HMRepoRoot)' == ''">$(HM_REPO_ROOT)</HMRepoRoot>
+    <HMRepoRoot Condition="'$(HMRepoRoot)' == ''">$(MSBuildThisFileDirectory)..\..\hidmaestro</HMRepoRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(HMRepoRoot)\sdk\HIDMaestro.Core\HIDMaestro.Core.csproj" />
+  </ItemGroup>
+
+</Project>
