@@ -12,7 +12,7 @@ jobs:
     # installs a driver, so this workflow is deliberately manual-only.
     runs-on: [self-hosted, windows, x64, hidmaestro-release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           submodules: recursive
