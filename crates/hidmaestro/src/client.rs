@@ -24,6 +24,10 @@ pub const BRIDGE_PATH_ENV: &str = "HIDMAESTRO_BRIDGE_PATH";
 /// Default binary name searched on `PATH` when no explicit path is given.
 pub const BRIDGE_BIN_NAME: &str = "hidmaestro-bridge";
 
+// HMContext disposal can take 5-11 seconds while Windows removes devices.
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 /// Builder for [`HidMaestro`].
 #[derive(Debug, Clone)]
 pub struct HidMaestroBuilder {
@@ -162,7 +166,8 @@ struct ControllerSlot {
 }
 
 /// A connected HIDMaestro session. Wraps the bridge process; dropping it
-/// kills the child (which tears down all virtual controllers).
+/// asks the child to dispose all virtual controllers before falling back to
+/// termination if it does not exit.
 ///
 /// Create via [`HidMaestro::builder`]`().spawn()` or [`HidMaestro::spawn`].
 pub struct HidMaestro {
@@ -173,6 +178,16 @@ pub struct HidMaestro {
     pending_events: VecDeque<OutputEvent>,
     controllers: HashMap<String, ControllerSlot>,
     response_timeout: Duration,
+}
+
+fn drain_ready_events(rx: &Receiver<Inbound>, pending_events: &mut VecDeque<OutputEvent>) {
+    while let Ok(message) = rx.try_recv() {
+        if let Inbound::Event { data, .. } = message {
+            if let Ok(event) = serde_json::from_value(data) {
+                pending_events.push_back(event);
+            }
+        }
+    }
 }
 
 impl HidMaestro {
@@ -191,19 +206,7 @@ impl HidMaestro {
         method: &'static str,
         params: Option<P>,
     ) -> Result<serde_json::Value> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let req = Request { id, method, params };
-        let mut line = serde_json::to_vec(&req)?;
-        line.push(b'\n');
-        self.stdin.write_all(&line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                Error::BridgeExited(String::new())
-            } else {
-                Error::Io(e)
-            }
-        })?;
-        self.stdin.flush()?;
-
+        let id = self.send_request(method, params)?;
         let deadline = Instant::now() + self.response_timeout;
         loop {
             let now = Instant::now();
@@ -246,9 +249,30 @@ impl HidMaestro {
         }
     }
 
-    /// Drain decoded output reports (rumble/FFB/LED writes from games) that
-    /// arrived while other calls were running.
+    fn send_request<P: Serialize>(
+        &mut self,
+        method: &'static str,
+        params: Option<P>,
+    ) -> Result<u64> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let req = Request { id, method, params };
+        let mut line = serde_json::to_vec(&req)?;
+        line.push(b'\n');
+        self.stdin.write_all(&line).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                Error::BridgeExited(String::new())
+            } else {
+                Error::Io(e)
+            }
+        })?;
+        self.stdin.flush().map_err(Error::Io)?;
+        Ok(id)
+    }
+
+    /// Drain all received raw and decoded output reports (rumble/FFB/LED
+    /// writes from games), including reports received between RPC calls.
     pub fn drain_events(&mut self) -> Vec<OutputEvent> {
+        drain_ready_events(&self.rx, &mut self.pending_events);
         self.pending_events.drain(..).collect()
     }
 
@@ -421,22 +445,34 @@ impl HidMaestro {
         Ok(())
     }
 
-    /// Stop the bridge process (disposes all controllers).
+    /// Stop the bridge process after it disposes all controllers.
     pub fn shutdown(mut self) {
-        let _ = self.rpc("shutdown", None::<()>);
-        if let Some(mut c) = self.child.take() {
-            let _ = c.kill();
-            let _ = c.wait();
+        self.stop_bridge();
+    }
+
+    fn stop_bridge(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = self.send_request("shutdown", None::<()>);
+        let deadline = Instant::now() + GRACEFUL_SHUTDOWN_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => thread::sleep(SHUTDOWN_POLL_INTERVAL),
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return;
+                }
+            }
         }
     }
 }
 
 impl Drop for HidMaestro {
     fn drop(&mut self) {
-        if let Some(mut c) = self.child.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
+        self.stop_bridge();
     }
 }
 
@@ -528,5 +564,33 @@ impl<'a> Controller<'a> {
     /// Remove this controller (hot-unplug). Consumes the handle.
     pub fn remove(self) -> Result<()> {
         self.hm.remove_controller(&self.key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drains_events_queued_after_a_response() {
+        let (tx, rx) = channel();
+        for message in [
+            r#"{"event":"output","data":{"controller":"first","report_id":1}}"#,
+            r#"{"id":1,"ok":true,"result":null}"#,
+            r#"{"event":"output","data":{"controller":"second","report_id":2}}"#,
+        ] {
+            tx.send(serde_json::from_str(message).unwrap()).unwrap();
+        }
+
+        let mut pending_events = VecDeque::new();
+        drain_ready_events(&rx, &mut pending_events);
+
+        assert_eq!(
+            pending_events
+                .iter()
+                .map(|event| event.controller.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
     }
 }

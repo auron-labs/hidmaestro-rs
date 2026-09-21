@@ -1,10 +1,10 @@
 [package]
 name = "hidmaestro-mcp"
-description = "MCP stdio server that lets LLM agents drive HIDMaestro virtual gamepads."
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
+description = "MCP stdio server that lets LLM agents drive HIDMaestro virtual gamepads."
+license.workspace = true
 
 [[bin]]
 name = "hidmaestro-mcp"

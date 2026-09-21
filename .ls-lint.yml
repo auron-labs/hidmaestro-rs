@@ -1,0 +1,13 @@
+ls:
+  crates:
+    .dir: kebab-case
+    .rs: snake_case
+
+  bridge:
+    .cs: PascalCase
+    .csproj: regex:HIDMaestro\.Bridge
+
+ignore:
+  - target
+  - bridge/HIDMaestro.Bridge/bin
+  - bridge/HIDMaestro.Bridge/obj

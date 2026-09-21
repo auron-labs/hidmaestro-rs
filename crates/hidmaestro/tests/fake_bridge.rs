@@ -1,7 +1,6 @@
 //! End-to-end test of the RPC plumbing against a fake bridge process
 //! (a Python NDJSON responder), so the crate is testable off-Windows.
 
-use std::io::Write;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -50,6 +49,7 @@ fn rpc_roundtrip_against_fake_bridge() {
     let script = fake_bridge();
     let python = ["python3", "python"]
         .iter()
+        .copied()
         .find(|p| {
             std::process::Command::new(p)
                 .arg("--version")
@@ -61,20 +61,9 @@ fn rpc_roundtrip_against_fake_bridge() {
         })
         .expect("python3 required for the fake bridge test");
 
-    // Bridge path must be an executable; wrap python + script in a shim.
-    let shim = std::env::temp_dir().join(format!("hm-fake-bridge-shim-{}", std::process::id()));
-    {
-        let mut f = std::fs::File::create(&shim).unwrap();
-        writeln!(f, "#!/bin/sh\nexec {python} {script}").unwrap();
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
     let mut hm = HidMaestro::builder()
-        .bridge_path(&shim)
+        .bridge_path(python)
+        .arg(script)
         .response_timeout(Duration::from_secs(10))
         .spawn()
         .expect("spawn fake bridge");

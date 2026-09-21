@@ -214,7 +214,8 @@ impl Axis {
             "rz" | "right_trigger" | "rt" => Self::RZ,
             "slider" => Self::SLIDER,
             "dial" => Self::DIAL,
-            "wheel" | "steering" => Self::WHEEL,
+            "wheel" => Self::WHEEL,
+            "steering" => Self::STEERING,
             "rudder" => Self::RUDDER,
             "throttle" => Self::THROTTLE,
             "accelerator" | "gas" => Self::ACCELERATOR,
@@ -331,8 +332,9 @@ pub struct ControllerInfo {
     pub profile_id: String,
 }
 
-/// A decoded output report (rumble, LEDs, force feedback) emitted by a
-/// controller, forwarded by the bridge as an event.
+/// An output report (rumble, LEDs, force feedback) forwarded by the bridge.
+/// Each packet produces a raw event; when the SDK can decode it, a second
+/// event includes decoded fields and the CRC result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputEvent {
     pub controller: String,
@@ -341,6 +343,7 @@ pub struct OutputEvent {
     pub fields: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub raw: Vec<u8>,
+    /// False for unverified raw events or a failed decoded CRC check.
     #[serde(default)]
     pub crc_valid: bool,
 }

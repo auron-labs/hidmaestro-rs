@@ -42,6 +42,8 @@ fn hat_names() {
 fn axis_names() {
     assert_eq!(Axis::by_name("x"), Some(Axis::X));
     assert_eq!(Axis::by_name("left_trigger"), Some(Axis::Z));
+    assert_eq!(Axis::by_name("wheel"), Some(Axis::WHEEL));
+    assert_eq!(Axis::by_name("steering"), Some(Axis::STEERING));
     assert_eq!(Axis::by_name("0x0133"), Some(Axis::RX));
     assert_eq!(Axis::by_name("304"), Some(Axis::X));
     assert_eq!(Axis::by_name("bogus"), None);

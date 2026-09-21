@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use hidmaestro::{Axis, Buttons, GamepadState, Hat, HidMaestro, StandardAxes};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 
 struct App {
@@ -65,6 +65,47 @@ fn parse_buttons(v: &Value) -> Result<Buttons, String> {
 
 fn f(v: &Map<String, Value>, key: &str) -> Option<f32> {
     v.get(key).and_then(|x| x.as_f64()).map(|x| x as f32)
+}
+
+#[derive(Deserialize)]
+struct Patch {
+    buttons: Option<Value>,
+    hat: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_f32")]
+    hat_degrees: Option<Option<f32>>,
+    axes: Option<Map<String, Value>>,
+    standard_axes: Option<StandardAxes>,
+}
+
+fn deserialize_optional_f32<'de, D>(deserializer: D) -> Result<Option<Option<f32>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::<f32>::deserialize(deserializer)?))
+}
+
+fn patched_state(mut state: GamepadState, patch: Patch) -> Result<GamepadState, String> {
+    if let Some(b) = patch.buttons {
+        state.buttons = parse_buttons(&b)?;
+    }
+    if let Some(h) = patch.hat {
+        state.hat = Hat::by_name(&h).ok_or_else(|| format!("unknown direction '{h}'"))?;
+        state.hat_degrees = None;
+    }
+    if let Some(hat_degrees) = patch.hat_degrees {
+        state.hat_degrees = hat_degrees;
+    }
+    if let Some(axes) = patch.axes {
+        for (k, v) in axes {
+            let a = Axis::by_name(&k).ok_or_else(|| format!("unknown axis '{k}'"))?;
+            let val = v.as_f64().ok_or("axis values must be numbers")? as f32;
+            state.axes.insert(a, val.clamp(0.0, 1.0));
+        }
+    }
+    if patch.standard_axes.is_some() {
+        state.standard_axes = patch.standard_axes;
+    }
+    Ok(state)
 }
 
 fn tool_error(msg: impl Into<String>) -> Value {
@@ -305,37 +346,17 @@ fn call_tool(name: &str, args: Map<String, Value>) -> Result<Value, String> {
                 .get("state")
                 .cloned()
                 .unwrap_or(Value::Object(Map::new()));
-            #[derive(Deserialize)]
-            struct Patch {
-                buttons: Option<Value>,
-                hat: Option<String>,
-                hat_degrees: Option<f32>,
-                axes: Option<Map<String, Value>>,
-                standard_axes: Option<StandardAxes>,
-            }
             let patch: Patch =
                 serde_json::from_value(raw).map_err(|e| format!("invalid state: {e}"))?;
-            let st = app.state_for(key)?;
-            if let Some(b) = patch.buttons {
-                st.buttons = parse_buttons(&b)?;
-            }
-            if let Some(h) = patch.hat {
-                st.hat = Hat::by_name(&h).ok_or_else(|| format!("unknown direction '{h}'"))?;
-            }
-            if patch.hat_degrees.is_some() {
-                st.hat_degrees = patch.hat_degrees;
-            }
-            if let Some(axes) = patch.axes {
-                for (k, v) in axes {
-                    let a = Axis::by_name(&k).ok_or_else(|| format!("unknown axis '{k}'"))?;
-                    let val = v.as_f64().ok_or("axis values must be numbers")? as f32;
-                    st.axes.insert(a, val.clamp(0.0, 1.0));
-                }
-            }
-            if patch.standard_axes.is_some() {
-                st.standard_axes = patch.standard_axes;
-            }
-            app.submit(key)?;
+            let state = app
+                .hm()?
+                .state(key)
+                .cloned()
+                .ok_or_else(|| format!("no such controller '{key}'"))?;
+            let state = patched_state(state, patch)?;
+            app.hm()?
+                .submit_state(key, &state)
+                .map_err(|e| e.to_string())?;
             Ok(tool_ok(format!("'{key}' state updated")))
         }),
         "get_state" => with_app(|app| {
@@ -500,7 +521,7 @@ fn tools() -> Value {
         },
         {
             "name": "drain_output_events",
-            "description": "Drain decoded output reports (rumble/LED/FFB writes games sent to the virtual pad).",
+            "description": "Drain raw and decoded output reports (rumble/LED/FFB writes games sent to the virtual pad).",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -538,8 +559,14 @@ fn handle(msg: &Value) -> Option<Value> {
                 Err(e) => tool_error(e),
             }
         }
-        // Notifications and unknown methods: no response required.
-        _ => return None,
+        _ => {
+            let id = id?;
+            return Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "Method not found"}
+            }));
+        }
     };
 
     let id = id?;
@@ -570,5 +597,103 @@ fn main() {
             let _ = writeln!(stdout, "{resp}");
             let _ = stdout.flush();
         }
+    }
+}
+
+#[cfg(test)]
+mod set_state_atomic_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_patch_leaves_cached_state_unchanged() {
+        let mut state = GamepadState::neutral();
+        state.buttons = Buttons::A;
+        let before = state.clone();
+        let patch: Patch = serde_json::from_value(json!({
+            "buttons": "b",
+            "axes": {"not_an_axis": 0.5}
+        }))
+        .unwrap();
+
+        assert!(patched_state(state.clone(), patch).is_err());
+        assert_eq!(state, before);
+    }
+}
+
+#[cfg(test)]
+mod hat_patch_tests {
+    use super::*;
+
+    fn state_with_angle() -> GamepadState {
+        let mut state = GamepadState::neutral();
+        state.hat_degrees = Some(45.0);
+        state
+    }
+
+    #[test]
+    fn discrete_hat_clears_degrees() {
+        for (hat, expected) in [("none", Hat::None), ("north", Hat::North)] {
+            let patch = serde_json::from_value(json!({"hat": hat})).unwrap();
+            let state = patched_state(state_with_angle(), patch).unwrap();
+
+            assert_eq!(state.hat, expected);
+            assert_eq!(state.hat_degrees, None);
+        }
+    }
+
+    #[test]
+    fn omitted_hat_fields_preserve_degrees() {
+        let patch = serde_json::from_value(json!({"buttons": "a"})).unwrap();
+
+        assert_eq!(
+            patched_state(state_with_angle(), patch)
+                .unwrap()
+                .hat_degrees,
+            Some(45.0)
+        );
+    }
+
+    #[test]
+    fn null_hat_degrees_clears_angle() {
+        let patch = serde_json::from_value(json!({"hat_degrees": null})).unwrap();
+
+        assert_eq!(
+            patched_state(state_with_angle(), patch)
+                .unwrap()
+                .hat_degrees,
+            None
+        );
+    }
+
+    #[test]
+    fn numeric_angle_overrides_discrete_hat_when_both_are_set() {
+        let patch = serde_json::from_value(json!({"hat": "east", "hat_degrees": 270.0})).unwrap();
+        let state = patched_state(state_with_angle(), patch).unwrap();
+
+        assert_eq!(state.hat, Hat::East);
+        assert_eq!(state.hat_degrees, Some(270.0));
+    }
+}
+
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_request_returns_method_not_found_with_original_id() {
+        for id in [json!(7), json!("request-7"), Value::Null] {
+            let response =
+                handle(&json!({"jsonrpc": "2.0", "id": id, "method": "unknown"})).unwrap();
+
+            assert_eq!(response["jsonrpc"], "2.0");
+            assert_eq!(response["id"], id);
+            assert_eq!(response["error"]["code"], -32601);
+            assert_eq!(response["error"]["message"], "Method not found");
+        }
+    }
+
+    #[test]
+    fn unknown_notification_is_ignored() {
+        assert!(handle(&json!({"jsonrpc": "2.0", "method": "unknown"})).is_none());
     }
 }

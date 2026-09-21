@@ -6,19 +6,23 @@
 // It replies per line on stdout:
 //     {"id":1,"ok":true,"result":{...}}
 //     {"id":1,"ok":false,"error":"..."}
-// Decoded output reports (rumble/LED/FFB) arrive unsolicited:
+// Raw and decoded output reports (rumble/LED/FFB) arrive unsolicited:
 //     {"event":"output","data":{...}}
 //
 // Run elevated — driver install and device creation need administrator.
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HIDMaestro;
 
-var ctx = new HMContext();
+using var ctx = new HMContext();
 var controllers = new Dictionary<string, HMController>(StringComparer.Ordinal);
 var writeLock = new object();
 int nextKey = 0;
+bool shutdownRequested = false;
 
 void Write(JsonObject obj)
 {
@@ -54,11 +58,36 @@ static JsonObject ProfileJson(HMProfile p) => new()
 
 void HookEvents(HMController ctrl, string key)
 {
+    // Every packet is forwarded; decoded packets also emit the enriched event below.
+    ctrl.OutputReceived += (_, packet) =>
+    {
+        var raw = new byte[packet.Data.Length + 1];
+        raw[0] = packet.ReportId;
+        packet.Data.Span.CopyTo(raw.AsSpan(1));
+        Write(new JsonObject
+        {
+            ["event"] = "output",
+            ["data"] = new JsonObject
+            {
+                ["controller"] = key,
+                ["report_id"] = packet.ReportId,
+                ["fields"] = new JsonObject(),
+                ["raw"] = new JsonArray(raw.Select(static b => (JsonNode?)JsonValue.Create(b)).ToArray()),
+                ["crc_valid"] = false, // Raw packets have not been CRC-checked.
+            },
+        });
+    };
+
     ctrl.OutputDecoded += (_, e) =>
     {
         var fields = new JsonObject();
         foreach (var kv in e.Fields)
-            fields[kv.Key] = kv.Value?.ToString();
+            fields[kv.Key] = kv.Value switch
+            {
+                byte[] bytes => new JsonArray(bytes.Select(static b => (JsonNode?)JsonValue.Create(b)).ToArray()),
+                null => null,
+                _ => JsonSerializer.SerializeToNode(kv.Value, kv.Value.GetType()),
+            };
         Write(new JsonObject
         {
             ["event"] = "output",
@@ -67,7 +96,7 @@ void HookEvents(HMController ctrl, string key)
                 ["controller"] = key,
                 ["report_id"] = e.ReportId,
                 ["fields"] = fields,
-                ["raw"] = e.RawBytes.ToArray(),
+                ["raw"] = new JsonArray(e.RawBytes.ToArray().Select(static b => (JsonNode?)JsonValue.Create(b)).ToArray()),
                 ["crc_valid"] = e.CrcValid,
             },
         });
@@ -210,8 +239,10 @@ JsonNode? Dispatch(string method, JsonObject p)
                 }).ToArray());
 
         case "remove_all_controllers":
-            HMContext.RemoveAllVirtualControllers();
+            foreach (var controller in controllers.Values)
+                controller.Dispose();
             controllers.Clear();
+            HMContext.RemoveAllVirtualControllers();
             return null;
 
         case "submit_state":
@@ -235,7 +266,7 @@ JsonNode? Dispatch(string method, JsonObject p)
             return null;
 
         case "shutdown":
-            Environment.Exit(0);
+            shutdownRequested = true;
             return null;
 
         default:
@@ -257,6 +288,7 @@ while ((line = Console.In.ReadLine()) is not null)
         var method = ReqStr(req, "method");
         var p = req["params"] as JsonObject ?? new JsonObject();
         Write(Ok(id, Dispatch(method, p)));
+        if (shutdownRequested) break;
     }
     catch (JsonException e)
     {
