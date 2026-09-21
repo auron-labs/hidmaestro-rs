@@ -10,6 +10,15 @@ pub enum Error {
     #[error("failed to spawn bridge process `{program}`: {source}")]
     Spawn { program: String, source: io::Error },
 
+    #[error("invalid HIDMaestro pipe name `{name}`: {reason}")]
+    InvalidPipeName { name: String, reason: &'static str },
+
+    #[error("named-pipe bridge mode is only supported on Windows; remove HIDMAESTRO_PIPE_NAME or use stdio bridge spawning")]
+    PipeUnsupported,
+
+    #[error("failed to connect to HIDMaestro named pipe `{name}`: {source}")]
+    PipeConnect { name: String, source: io::Error },
+
     #[error("bridge I/O error: {0}")]
     Io(#[from] io::Error),
 

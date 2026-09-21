@@ -1,4 +1,4 @@
-// hidmaestro-bridge — NDJSON-over-stdio host for the HIDMaestro .NET SDK.
+// hidmaestro-bridge — NDJSON host for the HIDMaestro .NET SDK.
 //
 // The Rust `hidmaestro` crate spawns this process and sends one JSON object
 // per line on stdin:
@@ -13,21 +13,79 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Pipes;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HIDMaestro;
 
+static bool IsPipeNameCharacter(char character) =>
+    character is >= 'a' and <= 'z'
+        or >= 'A' and <= 'Z'
+        or >= '0' and <= '9'
+        or '-' or '_' or '.';
+
+static string ValidatePipeName(string pipeName)
+{
+    if (pipeName.Length == 0)
+        throw new ArgumentException("pipe name must not be empty");
+    if (pipeName.Length > 128)
+        throw new ArgumentException("pipe name must be at most 128 characters");
+    if (!char.IsAsciiLetterOrDigit(pipeName[0]))
+        throw new ArgumentException("pipe name must start with an ASCII letter or digit");
+    if (pipeName.Any(character => !IsPipeNameCharacter(character)))
+        throw new ArgumentException(
+            "pipe name may contain only ASCII letters, digits, '-', '_', and '.'; do not include a path or \\\\.\\pipe\\ prefix");
+    return pipeName;
+}
+
+static string? ParsePipeName(string[] arguments)
+{
+    if (arguments.Length == 0)
+        return null;
+    if (arguments.Length != 2 || arguments[0] != "--pipe")
+        throw new ArgumentException("usage: hidmaestro-bridge.exe [--pipe <safe-name>]");
+    return ValidatePipeName(arguments[1]);
+}
+
+static NamedPipeServerStream CreatePipe(string pipeName) =>
+    new(
+        pipeName,
+        PipeDirection.InOut,
+        1,
+        PipeTransmissionMode.Byte,
+        PipeOptions.CurrentUserOnly,
+        4096,
+        4096);
+
+string? pipeName;
+try
+{
+    pipeName = ParsePipeName(args);
+}
+catch (ArgumentException error)
+{
+    Console.Error.WriteLine($"hidmaestro-bridge: {error.Message}");
+    Environment.ExitCode = 2;
+    return;
+}
+
 using var ctx = new HMContext();
 var controllers = new Dictionary<string, HMController>(StringComparer.Ordinal);
 var writeLock = new object();
+TextWriter protocolOutput = Console.Out;
 int nextKey = 0;
 bool shutdownRequested = false;
 
 void Write(JsonObject obj)
 {
     lock (writeLock)
-        Console.Out.WriteLine(obj.ToJsonString());
+    {
+        protocolOutput.WriteLine(obj.ToJsonString());
+        protocolOutput.Flush();
+    }
 }
 
 JsonObject Ok(ulong id, JsonNode? result) =>
@@ -274,28 +332,83 @@ JsonNode? Dispatch(string method, JsonObject p)
     }
 }
 
-string? line;
-while ((line = Console.In.ReadLine()) is not null)
+void RunProtocol(TextReader input, TextWriter output)
 {
-    if (string.IsNullOrWhiteSpace(line)) continue;
-    JsonObject? req = null;
-    ulong id = 0;
-    try
+    protocolOutput = output;
+    string? line;
+    while ((line = input.ReadLine()) is not null)
     {
-        req = JsonNode.Parse(line) as JsonObject
-            ?? throw new ArgumentException("request must be a JSON object");
-        id = ReqId(req);
-        var method = ReqStr(req, "method");
-        var p = req["params"] as JsonObject ?? new JsonObject();
-        Write(Ok(id, Dispatch(method, p)));
-        if (shutdownRequested) break;
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        JsonObject? req = null;
+        ulong id = 0;
+        try
+        {
+            req = JsonNode.Parse(line) as JsonObject
+                ?? throw new ArgumentException("request must be a JSON object");
+            id = ReqId(req);
+            var method = ReqStr(req, "method");
+            var p = req["params"] as JsonObject ?? new JsonObject();
+            Write(Ok(id, Dispatch(method, p)));
+            if (shutdownRequested) break;
+        }
+        catch (JsonException e)
+        {
+            Write(Fail(id, $"bad json: {e.Message}"));
+        }
+        catch (Exception e)
+        {
+            Write(Fail(id, $"{e.GetType().Name}: {e.Message}"));
+        }
     }
-    catch (JsonException e)
+}
+
+void DisposeControllers()
+{
+    foreach (var controller in controllers.Values)
     {
-        Write(Fail(id, $"bad json: {e.Message}"));
+        try
+        {
+            controller.Dispose();
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine($"hidmaestro-bridge: failed to dispose controller: {error.Message}");
+        }
     }
-    catch (Exception e)
+    controllers.Clear();
+}
+
+try
+{
+    if (pipeName is null)
     {
-        Write(Fail(id, $"{e.GetType().Name}: {e.Message}"));
+        RunProtocol(Console.In, Console.Out);
     }
+    else
+    {
+        using var pipe = CreatePipe(pipeName);
+        Console.Error.WriteLine($"hidmaestro-bridge: waiting for one client on \\\\.\\pipe\\{pipeName}");
+        pipe.WaitForConnection();
+        Console.Error.WriteLine("hidmaestro-bridge: named-pipe client connected");
+        using var input = new StreamReader(
+            pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        using var output = new StreamWriter(pipe, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 1024, leaveOpen: true)
+        {
+            AutoFlush = true,
+        };
+        try
+        {
+            RunProtocol(input, output);
+        }
+        finally
+        {
+            // Keep the pipe writable while controller disposal drains any
+            // final SDK callbacks.
+            DisposeControllers();
+        }
+    }
+}
+finally
+{
+    DisposeControllers();
 }

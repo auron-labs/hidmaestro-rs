@@ -1,4 +1,4 @@
 /target
+/artifacts
 **/bin/
 **/obj/
-Cargo.lock

@@ -2,7 +2,7 @@
 //! (a Python NDJSON responder), so the crate is testable off-Windows.
 
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hidmaestro::{Buttons, GamepadState, Hat, HidMaestro};
 
@@ -37,7 +37,14 @@ for line in sys.stdin:
 "#;
 
 fn fake_bridge() -> String {
-    let dir = std::env::temp_dir().join(format!("hm-fake-bridge-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "hm-fake-bridge-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("fake_bridge.py");
     std::fs::write(&script, FAKE).unwrap();
@@ -98,5 +105,102 @@ fn rpc_roundtrip_against_fake_bridge() {
     assert_eq!(controllers[0].key, "c1");
 
     hm.remove_controller("c1").unwrap();
+    hm.shutdown();
+}
+
+#[test]
+fn output_event_flood_does_not_block_the_rpc_response() {
+    let script = fake_bridge();
+    std::fs::write(
+        &script,
+        r#"
+import json, sys
+for line in sys.stdin:
+    req = json.loads(line)
+    for i in range(100):
+        print(json.dumps({"event": "output", "data": {"controller": "c1", "report_id": i}}), flush=True)
+    print(json.dumps({"id": req["id"], "ok": True, "result": "pong"}), flush=True)
+    if req["method"] == "shutdown":
+        break
+"#,
+    )
+    .unwrap();
+    let python = ["python3", "python"]
+        .iter()
+        .copied()
+        .find(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .expect("python3 required for the fake bridge test");
+    let mut hm = HidMaestro::builder()
+        .bridge_path(python)
+        .arg(script)
+        .event_buffer_capacity(2)
+        .spawn()
+        .unwrap();
+
+    assert_eq!(hm.ping().unwrap(), "pong");
+    assert_eq!(hm.dropped_event_count(), 98);
+    assert_eq!(hm.drain_events().len(), 2);
+}
+
+#[test]
+fn failed_tap_release_keeps_the_last_confirmed_pressed_state() {
+    let script = fake_bridge();
+    std::fs::write(
+        &script,
+        r#"
+import json, sys
+submissions = 0
+for line in sys.stdin:
+    req = json.loads(line)
+    method = req["method"]
+    if method == "create_controller":
+        result = {"key": "c1", "profile_id": "test"}
+        print(json.dumps({"id": req["id"], "ok": True, "result": result}), flush=True)
+    elif method == "submit_state":
+        submissions += 1
+        print(json.dumps({"id": req["id"], "ok": submissions == 1, "error": "release failed"}), flush=True)
+    elif method == "shutdown":
+        print(json.dumps({"id": req["id"], "ok": True}), flush=True)
+        break
+    else:
+        print(json.dumps({"id": req["id"], "ok": True, "result": None}), flush=True)
+"#,
+    )
+    .unwrap();
+    let python = ["python3", "python"]
+        .iter()
+        .copied()
+        .find(|p| {
+            std::process::Command::new(p)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .expect("python3 required for the fake bridge test");
+    let mut hm = HidMaestro::builder()
+        .bridge_path(python)
+        .arg(script)
+        .spawn()
+        .unwrap();
+    let key = hm.create_controller("test", None).unwrap();
+
+    let error = hm
+        .controller(&key)
+        .unwrap()
+        .tap(Buttons::A, Duration::ZERO)
+        .unwrap_err();
+    assert!(error.to_string().contains("release failed"));
+    assert_eq!(hm.state(&key).unwrap().buttons, Buttons::A);
     hm.shutdown();
 }

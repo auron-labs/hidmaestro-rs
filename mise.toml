@@ -1,7 +1,21 @@
 [tools]
 betterleaks = "1.8.1"
 "cargo:cargo-deny" = "0.20.2"
+dotnet = "10.0"
+hk = "2.0.1"
 "npm:@ls-lint/ls-lint" = "2.3.1"
 pkl = "0.32.1"
 rust = "1.98.1"
 tombi = "1.5.5"
+
+[tasks.fmt]
+run = "cargo fmt --all"
+
+[tasks.check]
+run = "cargo check --workspace --all-targets --locked"
+
+[tasks.clippy]
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks.test]
+run = "cargo test --workspace --locked"

@@ -1,0 +1,3 @@
+[submodule "vendor/HIDMaestro"]
+	path = vendor/HIDMaestro
+	url = https://github.com/hifihedgehog/HIDMaestro.git

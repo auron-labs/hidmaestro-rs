@@ -2,11 +2,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::env;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,19 +22,27 @@ use crate::state::{
 /// Environment variable naming the bridge executable.
 pub const BRIDGE_PATH_ENV: &str = "HIDMAESTRO_BRIDGE_PATH";
 
+/// Environment variable naming an already-running elevated bridge's Windows
+/// named pipe.
+pub const PIPE_NAME_ENV: &str = "HIDMAESTRO_PIPE_NAME";
+
 /// Default binary name searched on `PATH` when no explicit path is given.
 pub const BRIDGE_BIN_NAME: &str = "hidmaestro-bridge";
 
 // HMContext disposal can take 5-11 seconds while Windows removes devices.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DEFAULT_EVENT_BUFFER_CAPACITY: usize = 1_024;
+const MAX_PIPE_NAME_LENGTH: usize = 128;
 
 /// Builder for [`HidMaestro`].
 #[derive(Debug, Clone)]
 pub struct HidMaestroBuilder {
     bridge_path: Option<PathBuf>,
+    pipe_name: Option<String>,
     args: Vec<String>,
     response_timeout: Duration,
+    event_buffer_capacity: usize,
     env: Vec<(String, String)>,
 }
 
@@ -41,8 +50,10 @@ impl Default for HidMaestroBuilder {
     fn default() -> Self {
         Self {
             bridge_path: None,
+            pipe_name: None,
             args: Vec::new(),
             response_timeout: Duration::from_secs(120),
+            event_buffer_capacity: DEFAULT_EVENT_BUFFER_CAPACITY,
             env: Vec::new(),
         }
     }
@@ -53,6 +64,14 @@ impl HidMaestroBuilder {
     /// `HIDMAESTRO_BRIDGE_PATH` and `PATH` lookup.
     pub fn bridge_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.bridge_path = Some(path.into());
+        self
+    }
+
+    /// Connect to an already-running elevated bridge on this Windows named
+    /// pipe instead of spawning a bridge process. Overrides
+    /// [`PIPE_NAME_ENV`].
+    pub fn pipe_name(mut self, name: impl Into<String>) -> Self {
+        self.pipe_name = Some(name.into());
         self
     }
 
@@ -75,6 +94,20 @@ impl HidMaestroBuilder {
         self
     }
 
+    /// Maximum decoded output events retained while the application is not
+    /// draining them. When full, the oldest event is discarded so bridge RPC
+    /// responses can always continue flowing.
+    ///
+    /// `capacity` must be greater than zero.
+    pub fn event_buffer_capacity(mut self, capacity: usize) -> Self {
+        assert!(
+            capacity > 0,
+            "event buffer capacity must be greater than zero"
+        );
+        self.event_buffer_capacity = capacity;
+        self
+    }
+
     fn resolve_path(&self) -> Result<PathBuf> {
         if let Some(p) = &self.bridge_path {
             return Ok(p.clone());
@@ -89,6 +122,9 @@ impl HidMaestroBuilder {
         } else {
             BRIDGE_BIN_NAME.to_string()
         };
+        if let Some(path) = bundled_bridge_path(&exe) {
+            return Ok(path);
+        }
         let path_var = env::var_os("PATH").unwrap_or_default();
         for dir in env::split_paths(&path_var) {
             let candidate = dir.join(&exe);
@@ -101,12 +137,33 @@ impl HidMaestroBuilder {
         )))
     }
 
+    fn configured_pipe_name(&self, environment_pipe_name: Option<&str>) -> Result<Option<String>> {
+        match self.pipe_name.as_deref() {
+            Some(name) => validate_pipe_name(name).map(Some),
+            None => environment_pipe_name
+                .filter(|name| !name.is_empty())
+                .map(validate_pipe_name)
+                .transpose(),
+        }
+    }
+
+    fn pipe_name_from_environment(&self) -> Result<Option<String>> {
+        self.configured_pipe_name(env::var(PIPE_NAME_ENV).ok().as_deref())
+    }
+
     /// Spawn the bridge process and return a connected client.
     ///
     /// Note: the bridge (and the virtual-driver machinery behind it) only
     /// functions on Windows; on other platforms calls fail unless the
     /// pointed-to bridge is a compatible stand-in.
     pub fn spawn(self) -> Result<HidMaestro> {
+        if let Some(pipe_name) = self.pipe_name_from_environment()? {
+            return self.connect_pipe(&pipe_name);
+        }
+        self.spawn_bridge()
+    }
+
+    fn spawn_bridge(self) -> Result<HidMaestro> {
         let program = self.resolve_path()?;
         let mut cmd = Command::new(&program);
         cmd.args(&self.args)
@@ -121,48 +178,185 @@ impl HidMaestroBuilder {
             source,
         })?;
 
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
+        Ok(HidMaestro::from_streams(
+            child.stdin.take().expect("piped stdin"),
+            child.stdout.take().expect("piped stdout"),
+            Some(child),
+            self.event_buffer_capacity,
+            self.response_timeout,
+        ))
+    }
 
-        let (tx, rx) = channel::<Inbound>();
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str::<Inbound>(&line) {
-                    Ok(msg) => {
-                        if tx.send(msg).is_err() {
-                            break;
-                        }
-                    }
-                    // Non-JSON noise on stdout (SDK warnings, etc.): ignore.
-                    Err(_) => continue,
-                }
-            }
-            // Sender dropped here → calls fail with BridgeExited.
-        });
+    #[cfg(windows)]
+    fn connect_pipe(self, pipe_name: &str) -> Result<HidMaestro> {
+        use std::fs::OpenOptions;
 
-        Ok(HidMaestro {
-            child: Some(child),
-            stdin,
-            rx,
-            next_id: AtomicU64::new(1),
-            pending_events: VecDeque::new(),
-            controllers: HashMap::new(),
-            response_timeout: self.response_timeout,
-        })
+        let pipe_path = format!(r"\\.\pipe\{pipe_name}");
+        let writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pipe_path)
+            .map_err(|source| Error::PipeConnect {
+                name: pipe_name.to_string(),
+                source,
+            })?;
+        let reader = writer.try_clone().map_err(|source| Error::PipeConnect {
+            name: pipe_name.to_string(),
+            source,
+        })?;
+        Ok(HidMaestro::from_streams(
+            writer,
+            reader,
+            None,
+            self.event_buffer_capacity,
+            self.response_timeout,
+        ))
+    }
+
+    #[cfg(not(windows))]
+    fn connect_pipe(self, _pipe_name: &str) -> Result<HidMaestro> {
+        Err(Error::PipeUnsupported)
+    }
+}
+
+fn bundled_bridge_path(executable_name: &str) -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|current_exe| bridge_next_to(current_exe, executable_name))
+}
+
+fn bridge_next_to(current_exe: &Path, executable_name: &str) -> Option<PathBuf> {
+    let candidate = current_exe.parent()?.join(executable_name);
+    candidate.is_file().then_some(candidate)
+}
+
+fn validate_pipe_name(name: &str) -> Result<String> {
+    let reason = if name.is_empty() {
+        Some("name must not be empty")
+    } else if name.len() > MAX_PIPE_NAME_LENGTH {
+        Some("name must be at most 128 ASCII characters")
+    } else if !name
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        Some("name must start with an ASCII letter or digit")
+    } else if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        Some(
+            r"name may contain only ASCII letters, digits, '-', '_', and '.'; do not include a path or \\.\pipe\ prefix",
+        )
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(Error::InvalidPipeName {
+            name: name.to_string(),
+            reason,
+        }),
+        None => Ok(name.to_string()),
     }
 }
 
 struct ControllerSlot {
     info: ControllerInfo,
     state: GamepadState,
+}
+
+struct EventQueue {
+    events: VecDeque<OutputEvent>,
+    dropped: u64,
+}
+
+struct EventBuffer {
+    queue: Mutex<EventQueue>,
+    available: Condvar,
+    capacity: usize,
+}
+
+impl EventBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            queue: Mutex::new(EventQueue {
+                events: VecDeque::new(),
+                dropped: 0,
+            }),
+            available: Condvar::new(),
+            capacity,
+        }
+    }
+
+    fn push(&self, event: OutputEvent) {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if queue.events.len() == self.capacity {
+            queue.events.pop_front();
+            queue.dropped += 1;
+        }
+        queue.events.push_back(event);
+        self.available.notify_one();
+    }
+
+    fn drain(&self) -> Vec<OutputEvent> {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.events.drain(..).collect()
+    }
+
+    fn wait(&self, timeout: Duration) -> Option<OutputEvent> {
+        self.wait_with(timeout, |_| true)
+    }
+
+    fn wait_for_controller(&self, controller: &str, timeout: Duration) -> Option<OutputEvent> {
+        self.wait_with(timeout, |event| event.controller == controller)
+    }
+
+    fn wait_with(
+        &self,
+        timeout: Duration,
+        matches: impl Fn(&OutputEvent) -> bool,
+    ) -> Option<OutputEvent> {
+        let deadline = Instant::now() + timeout;
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if let Some(index) = queue.events.iter().position(&matches) {
+                return queue.events.remove(index);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (new_queue, result) = self
+                .available
+                .wait_timeout(queue, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queue = new_queue;
+            if result.timed_out() {
+                return queue
+                    .events
+                    .iter()
+                    .position(&matches)
+                    .and_then(|index| queue.events.remove(index));
+            }
+        }
+    }
+
+    fn dropped(&self) -> u64 {
+        self.queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dropped
+    }
 }
 
 /// A connected HIDMaestro session. Wraps the bridge process; dropping it
@@ -172,22 +366,13 @@ struct ControllerSlot {
 /// Create via [`HidMaestro::builder`]`().spawn()` or [`HidMaestro::spawn`].
 pub struct HidMaestro {
     child: Option<Child>,
-    stdin: ChildStdin,
+    stdin: Box<dyn Write + Send>,
     rx: Receiver<Inbound>,
     next_id: AtomicU64,
-    pending_events: VecDeque<OutputEvent>,
+    events: Arc<EventBuffer>,
     controllers: HashMap<String, ControllerSlot>,
     response_timeout: Duration,
-}
-
-fn drain_ready_events(rx: &Receiver<Inbound>, pending_events: &mut VecDeque<OutputEvent>) {
-    while let Ok(message) = rx.try_recv() {
-        if let Inbound::Event { data, .. } = message {
-            if let Ok(event) = serde_json::from_value(data) {
-                pending_events.push_back(event);
-            }
-        }
-    }
+    shutdown_sent: bool,
 }
 
 impl HidMaestro {
@@ -195,10 +380,64 @@ impl HidMaestro {
         HidMaestroBuilder::default()
     }
 
-    /// Spawn with default settings: bridge found via `HIDMAESTRO_BRIDGE_PATH`
-    /// or `PATH`.
+    /// Spawn with default settings: bridge found via `HIDMAESTRO_BRIDGE_PATH`,
+    /// next to the current executable, or on `PATH`.
     pub fn spawn() -> Result<Self> {
         Self::builder().spawn()
+    }
+
+    fn from_streams<W, R>(
+        stdin: W,
+        stdout: R,
+        child: Option<Child>,
+        event_buffer_capacity: usize,
+        response_timeout: Duration,
+    ) -> Self
+    where
+        W: Write + Send + 'static,
+        R: Read + Send + 'static,
+    {
+        let (tx, rx) = channel::<Inbound>();
+        let events = Arc::new(EventBuffer::new(event_buffer_capacity));
+        let reader_events = Arc::clone(&events);
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(line) => line,
+                    Err(_) => break,
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<Inbound>(&line) {
+                    Ok(Inbound::Event { data, .. }) => {
+                        if let Ok(event) = serde_json::from_value(data) {
+                            reader_events.push(event);
+                        }
+                    }
+                    Ok(message @ Inbound::Response { .. }) => {
+                        if tx.send(message).is_err() {
+                            break;
+                        }
+                    }
+                    // Non-JSON noise on the protocol stream: ignore.
+                    Err(_) => continue,
+                }
+            }
+            // Sender dropped here → calls fail with BridgeExited.
+        });
+
+        Self {
+            child,
+            stdin: Box::new(stdin),
+            rx,
+            next_id: AtomicU64::new(1),
+            events,
+            controllers: HashMap::new(),
+            response_timeout,
+            shutdown_sent: false,
+        }
     }
 
     fn rpc<P: Serialize>(
@@ -229,12 +468,9 @@ impl HidMaestro {
                     };
                 }
                 Ok(Inbound::Response { .. }) => continue,
-                Ok(Inbound::Event { data, .. }) => {
-                    if let Ok(ev) = serde_json::from_value::<OutputEvent>(data) {
-                        self.pending_events.push_back(ev);
-                    }
-                    continue;
-                }
+                // The reader routes events directly into the bounded event
+                // buffer. Keep this arm defensive if a future reader changes.
+                Ok(Inbound::Event { .. }) => continue,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(Error::Timeout),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     let status = self
@@ -258,34 +494,37 @@ impl HidMaestro {
         let req = Request { id, method, params };
         let mut line = serde_json::to_vec(&req)?;
         line.push(b'\n');
-        self.stdin.write_all(&line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                Error::BridgeExited(String::new())
-            } else {
-                Error::Io(e)
-            }
-        })?;
-        self.stdin.flush().map_err(Error::Io)?;
+        self.stdin.write_all(&line).map_err(bridge_write_error)?;
+        self.stdin.flush().map_err(bridge_write_error)?;
         Ok(id)
     }
 
     /// Drain all received raw and decoded output reports (rumble/FFB/LED
     /// writes from games), including reports received between RPC calls.
     pub fn drain_events(&mut self) -> Vec<OutputEvent> {
-        drain_ready_events(&self.rx, &mut self.pending_events);
-        self.pending_events.drain(..).collect()
+        self.events.drain()
     }
 
     /// Block until the next output event or `timeout`.
     pub fn wait_event(&mut self, timeout: Duration) -> Result<Option<OutputEvent>> {
-        if let Some(ev) = self.pending_events.pop_front() {
-            return Ok(Some(ev));
-        }
-        match self.rx.recv_timeout(timeout) {
-            Ok(Inbound::Event { data, .. }) => Ok(serde_json::from_value(data).ok()),
-            Ok(Inbound::Response { .. }) => Ok(None),
-            Err(_) => Ok(None),
-        }
+        Ok(self.events.wait(timeout))
+    }
+
+    /// Block until the next output event for `controller` or `timeout`.
+    /// Events for other controllers remain queued for [`Self::drain_events`]
+    /// and remain subject to the configured bounded-buffer drop policy.
+    pub fn wait_event_for_controller(
+        &mut self,
+        controller: &str,
+        timeout: Duration,
+    ) -> Result<Option<OutputEvent>> {
+        Ok(self.events.wait_for_controller(controller, timeout))
+    }
+
+    /// Number of output events discarded because the configured event buffer
+    /// was full. The count is cumulative for the session.
+    pub fn dropped_event_count(&self) -> u64 {
+        self.events.dropped()
     }
 
     /// Round-trip check that the bridge is alive.
@@ -445,16 +684,20 @@ impl HidMaestro {
         Ok(())
     }
 
-    /// Stop the bridge process after it disposes all controllers.
+    /// Ask the bridge to dispose all controllers. A spawned bridge is then
+    /// waited for and terminated only if it does not exit promptly.
     pub fn shutdown(mut self) {
         self.stop_bridge();
     }
 
     fn stop_bridge(&mut self) {
+        if !self.shutdown_sent {
+            let _ = self.send_request("shutdown", None::<()>);
+            self.shutdown_sent = true;
+        }
         let Some(mut child) = self.child.take() else {
             return;
         };
-        let _ = self.send_request("shutdown", None::<()>);
         let deadline = Instant::now() + GRACEFUL_SHUTDOWN_TIMEOUT;
         loop {
             match child.try_wait() {
@@ -470,15 +713,23 @@ impl HidMaestro {
     }
 }
 
+fn bridge_write_error(error: std::io::Error) -> Error {
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
+        Error::BridgeExited(String::new())
+    } else {
+        Error::Io(error)
+    }
+}
+
 impl Drop for HidMaestro {
     fn drop(&mut self) {
         self.stop_bridge();
     }
 }
 
-/// Mutable view of one live virtual controller. Mutating methods update the
-/// client's mirrored [`GamepadState`]; `submit`-style methods push it to the
-/// device. Most helpers submit automatically.
+/// Mutable view of one live virtual controller. Helper methods submit a new
+/// [`GamepadState`] and update the client's mirror only after the bridge
+/// confirms it, so a failed submission leaves the last confirmed state intact.
 ///
 /// The handle borrows the session — obtain it transiently via
 /// [`HidMaestro::controller`], don't store it.
@@ -500,10 +751,6 @@ impl<'a> Controller<'a> {
         &self.hm.controllers[&self.key].state
     }
 
-    fn state_mut(&mut self) -> &mut GamepadState {
-        &mut self.hm.controllers.get_mut(&self.key).unwrap().state
-    }
-
     /// Push the mirrored state to the virtual device.
     pub fn submit(&mut self) -> Result<()> {
         let state = self.state().clone();
@@ -512,8 +759,7 @@ impl<'a> Controller<'a> {
 
     /// Replace the whole state and submit.
     pub fn submit_state(&mut self, state: GamepadState) -> Result<()> {
-        self.state_mut().clone_from(&state);
-        self.submit()
+        self.hm.submit_state(&self.key, &state)
     }
 
     /// Reset to neutral and submit.
@@ -523,14 +769,16 @@ impl<'a> Controller<'a> {
 
     /// Hold buttons down (without releasing others) and submit.
     pub fn press(&mut self, buttons: Buttons) -> Result<()> {
-        self.state_mut().buttons |= buttons;
-        self.submit()
+        let mut state = self.state().clone();
+        state.buttons |= buttons;
+        self.submit_state(state)
     }
 
     /// Release buttons (leaving others held) and submit.
     pub fn release(&mut self, buttons: Buttons) -> Result<()> {
-        self.state_mut().buttons -= buttons;
-        self.submit()
+        let mut state = self.state().clone();
+        state.buttons -= buttons;
+        self.submit_state(state)
     }
 
     /// Press, hold for `hold`, release. Submits twice.
@@ -542,23 +790,25 @@ impl<'a> Controller<'a> {
 
     /// Set the d-pad direction and submit.
     pub fn set_hat(&mut self, hat: Hat) -> Result<()> {
-        let st = self.state_mut();
-        st.hat = hat;
-        st.hat_degrees = None;
-        self.submit()
+        let mut state = self.state().clone();
+        state.hat = hat;
+        state.hat_degrees = None;
+        self.submit_state(state)
     }
 
     /// Set one analog axis (0.0..=1.0) by HID usage and submit.
     pub fn set_axis(&mut self, axis: Axis, value: f32) -> Result<()> {
-        self.state_mut().axes.insert(axis, value.clamp(0.0, 1.0));
-        self.submit()
+        let mut state = self.state().clone();
+        state.axes.insert(axis, value.clamp(0.0, 1.0));
+        self.submit_state(state)
     }
 
     /// Set the canonical six axes (sticks centered at 0.5, triggers 0..1)
     /// and submit.
     pub fn set_standard_axes(&mut self, axes: StandardAxes) -> Result<()> {
-        self.state_mut().standard_axes = Some(axes);
-        self.submit()
+        let mut state = self.state().clone();
+        state.standard_axes = Some(axes);
+        self.submit_state(state)
     }
 
     /// Remove this controller (hot-unplug). Consumes the handle.
@@ -572,25 +822,149 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drains_events_queued_after_a_response() {
-        let (tx, rx) = channel();
-        for message in [
-            r#"{"event":"output","data":{"controller":"first","report_id":1}}"#,
-            r#"{"id":1,"ok":true,"result":null}"#,
-            r#"{"event":"output","data":{"controller":"second","report_id":2}}"#,
-        ] {
-            tx.send(serde_json::from_str(message).unwrap()).unwrap();
+    fn bounded_event_buffer_discards_oldest_and_counts_drops() {
+        let events = EventBuffer::new(2);
+        for controller in ["first", "second", "third"] {
+            events.push(OutputEvent {
+                controller: controller.into(),
+                report_id: 1,
+                fields: Default::default(),
+                raw: Vec::new(),
+                crc_valid: false,
+            });
         }
 
-        let mut pending_events = VecDeque::new();
-        drain_ready_events(&rx, &mut pending_events);
+        assert_eq!(events.dropped(), 1);
+        assert_eq!(
+            events
+                .drain()
+                .into_iter()
+                .map(|event| event.controller)
+                .collect::<Vec<_>>(),
+            ["second", "third"]
+        );
+    }
+
+    #[test]
+    fn pipe_name_validation_rejects_paths_and_accepts_safe_names() {
+        assert_eq!(
+            validate_pipe_name("hidmaestro-mcp_1.2").unwrap(),
+            "hidmaestro-mcp_1.2"
+        );
+        for invalid in [
+            "",
+            ".hidden",
+            r"\\.\pipe\hidmaestro",
+            "nested/name",
+            "name space",
+        ] {
+            assert!(
+                validate_pipe_name(invalid).is_err(),
+                "{invalid:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_wait_keeps_a_flood_of_unmatched_events_bounded_and_drainable() {
+        let events = EventBuffer::new(2);
+        for report_id in 0..100 {
+            events.push(OutputEvent {
+                controller: "other".into(),
+                report_id,
+                fields: Default::default(),
+                raw: Vec::new(),
+                crc_valid: false,
+            });
+        }
+        events.push(OutputEvent {
+            controller: "target".into(),
+            report_id: 100,
+            fields: Default::default(),
+            raw: Vec::new(),
+            crc_valid: false,
+        });
 
         assert_eq!(
-            pending_events
-                .iter()
-                .map(|event| event.controller.as_str())
-                .collect::<Vec<_>>(),
-            ["first", "second"]
+            events
+                .wait_for_controller("target", Duration::ZERO)
+                .unwrap()
+                .controller,
+            "target"
         );
+        assert_eq!(events.dropped(), 99);
+        assert_eq!(
+            events
+                .drain()
+                .into_iter()
+                .map(|event| event.report_id)
+                .collect::<Vec<_>>(),
+            [99]
+        );
+        assert!(events
+            .wait_for_controller("target", Duration::ZERO)
+            .is_none());
+
+        let timed_out = EventBuffer::new(2);
+        for report_id in 0..100 {
+            timed_out.push(OutputEvent {
+                controller: "other".into(),
+                report_id,
+                fields: Default::default(),
+                raw: Vec::new(),
+                crc_valid: false,
+            });
+        }
+        assert!(timed_out
+            .wait_for_controller("target", Duration::ZERO)
+            .is_none());
+        assert_eq!(timed_out.dropped(), 98);
+        assert_eq!(timed_out.drain().len(), 2);
+    }
+
+    #[test]
+    fn bundled_bridge_is_found_next_to_the_current_executable() {
+        let directory =
+            std::env::temp_dir().join(format!("hidmaestro-bundled-bridge-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let current_exe = directory.join("hidmaestro-mcp.exe");
+        let bridge = directory.join("hidmaestro-bridge.exe");
+        std::fs::write(&bridge, []).unwrap();
+
+        assert_eq!(
+            bridge_next_to(&current_exe, "hidmaestro-bridge.exe"),
+            Some(bridge)
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn explicit_pipe_name_takes_precedence_over_environment_configuration() {
+        let builder = HidMaestro::builder().pipe_name("explicit-pipe");
+        assert_eq!(
+            builder
+                .configured_pipe_name(Some("environment-pipe"))
+                .unwrap(),
+            Some("explicit-pipe".to_string())
+        );
+        assert_eq!(
+            HidMaestro::builder()
+                .configured_pipe_name(Some("environment-pipe"))
+                .unwrap(),
+            Some("environment-pipe".to_string())
+        );
+        assert_eq!(
+            HidMaestro::builder()
+                .configured_pipe_name(Some(""))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn configured_pipe_mode_is_actionably_unsupported_off_windows() {
+        let result = HidMaestro::builder().pipe_name("hidmaestro-mcp").spawn();
+        assert!(matches!(result, Err(Error::PipeUnsupported)));
     }
 }

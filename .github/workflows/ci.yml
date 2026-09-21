@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo metadata --locked --format-version 1 > /dev/null
+
+  windows:
+    name: Windows source validation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: cargo build --workspace --release --locked
+      - run: cargo test --workspace --locked
+      - name: Restore bridge and validate packaging script
+        shell: pwsh
+        run: |
+          dotnet restore bridge/HIDMaestro.Bridge/HIDMaestro.Bridge.csproj /p:HMRepoRoot="$PWD/vendor/HIDMaestro"
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/scripts/package-windows.ps1", [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count) { throw ($errors | Format-List | Out-String) }
+          if ((git -C vendor/HIDMaestro rev-parse HEAD) -ne '942e25aa9ce4e93dc601f59a796f7432809fc41b') {
+            throw 'Pinned HIDMaestro submodule commit is incorrect.'
+          }

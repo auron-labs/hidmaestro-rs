@@ -6,7 +6,7 @@ members = ["crates/hidmaestro", "crates/hidmaestro-mcp"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-repository = "https://github.com/hifihedgehog/HIDMaestro"
+repository = "https://github.com/auron-labs/hidmaestro-rs"
 license = "MIT"
 
 [workspace.dependencies]

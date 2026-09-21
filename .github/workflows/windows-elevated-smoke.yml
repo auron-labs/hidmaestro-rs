@@ -1,0 +1,32 @@
+name: Windows elevated smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    # This maintained runner has Windows x64, MSVC, and the WDK. The script
+    # installs a driver, so this workflow is deliberately manual-only.
+    runs-on: [self-hosted, windows, x64, hidmaestro-release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Package staged Windows bundle
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Mode Stage
+      - name: Exercise MCP through XInput
+        shell: pwsh
+        run: ./scripts/smoke-windows.ps1
+      - name: Remove staged bundle
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath ./artifacts/stage -Recurse -Force -ErrorAction SilentlyContinue

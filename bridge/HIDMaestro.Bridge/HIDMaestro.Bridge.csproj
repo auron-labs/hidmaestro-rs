@@ -14,7 +14,7 @@
            dotnet build /p:HMRepoRoot=C:\src\HIDMaestro
          or set the HM_REPO_ROOT env var. -->
     <HMRepoRoot Condition="'$(HMRepoRoot)' == ''">$(HM_REPO_ROOT)</HMRepoRoot>
-    <HMRepoRoot Condition="'$(HMRepoRoot)' == ''">$(MSBuildThisFileDirectory)..\..\hidmaestro</HMRepoRoot>
+    <HMRepoRoot Condition="'$(HMRepoRoot)' == ''">$(MSBuildThisFileDirectory)..\..\vendor\HIDMaestro</HMRepoRoot>
   </PropertyGroup>
 
   <ItemGroup>
