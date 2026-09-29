@@ -71,5 +71,7 @@ MCP bridge in `finally`; stdin EOF is also a supported server shutdown path.
 Release Please is the sole owner of version bumps, `vX.Y.Z` tags, changelog
 updates, and GitHub releases on `main`. After its release PR is merged, the
 release workflow builds the unsigned Windows x64 archive and checksum and
-attaches both to the created GitHub release. Do not create tags or releases by
-hand.
+attaches both to the created GitHub release. The same release event publishes
+the `hidmaestro` crate to crates.io from the release tag, so the
+`CARGO_REGISTRY_TOKEN` repository secret must be set before the first release.
+Do not create tags or releases by hand.

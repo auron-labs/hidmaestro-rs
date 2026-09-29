@@ -8,6 +8,8 @@ edition = "2021"
 rust-version = "1.75"
 repository = "https://github.com/auron-labs/hidmaestro-rs"
 license = "MIT"
+keywords = ["controller", "gamepad", "hid", "testing", "windows"]
+categories = ["development-tools::testing", "game-development", "hardware-support"]
 
 [workspace.dependencies]
 bitflags = { version = "2", features = ["serde"] }

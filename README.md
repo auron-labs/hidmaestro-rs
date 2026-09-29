@@ -1,5 +1,8 @@
 # hidmaestro-rs
 
+[![CI](https://img.shields.io/github/actions/workflow/status/auron-labs/hidmaestro-rs/ci.yml?branch=main&style=flat-square)](https://github.com/auron-labs/hidmaestro-rs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/auron-labs/hidmaestro-rs?style=flat-square)](LICENSE)
+
 Control [HIDMaestro](https://github.com/hifihedgehog/HIDMaestro) virtual game
 controllers from Rust or an MCP client. HIDMaestro presents controllers as real
 Windows hardware to DirectInput, XInput, SDL3, browser Gamepad, and WGI/GameInput.
@@ -88,6 +91,12 @@ client disconnects or sends `shutdown`. Do not pass a path or a `\\.\pipe\`
 prefix as the name.
 
 ## Rust quick start
+
+Install the `hidmaestro` crate, published to crates.io with each release:
+
+```console
+cargo add hidmaestro
+```
 
 `HidMaestro::spawn()` prefers an explicit builder path, then
 `HIDMAESTRO_BRIDGE_PATH`, then a bridge next to the current executable, and

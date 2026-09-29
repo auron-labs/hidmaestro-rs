@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Client for the HIDMaestro virtual game-controller driver: spawn virtual controllers and submit gamepad state for end-to-end tests."
+readme = "README.md"
+repository.workspace = true
 license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 bitflags.workspace = true
