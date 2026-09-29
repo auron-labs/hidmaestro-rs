@@ -3,192 +3,137 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/auron-labs/hidmaestro-rs/ci.yml?branch=main&style=flat-square)](https://github.com/auron-labs/hidmaestro-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/auron-labs/hidmaestro-rs?style=flat-square)](LICENSE)
 
-Control [HIDMaestro](https://github.com/hifihedgehog/HIDMaestro) virtual game
-controllers from Rust or an MCP client. HIDMaestro presents controllers as real
-Windows hardware to DirectInput, XInput, SDL3, browser Gamepad, and WGI/GameInput.
-This project is for end-to-end tests that need a controller and for agents that
-need to drive one.
+hidmaestro-rs creates virtual game controllers on Windows. Use it from Rust tests
+or an MCP-enabled assistant to press buttons, move sticks, and read feedback sent
+by an application. For example, test that a game's menu responds to a controller
+button, then check its rumble output.
 
-| Component | Purpose |
-|---|---|
-| `hidmaestro` | Rust client: install the driver, create controllers, and submit state. |
-| `hidmaestro-mcp.exe` | MCP stdio server for agent tools such as `press_buttons` and `set_sticks`. |
-| `hidmaestro-bridge.exe` | Self-contained .NET host for the HIDMaestro SDK and driver payload. |
+[HIDMaestro](https://github.com/hifihedgehog/HIDMaestro) supplies the underlying
+controller implementation. This repository provides the Rust client, a server
+for Model Context Protocol (MCP, a protocol through which assistants discover and
+call tools), and a .NET bridge to HIDMaestro. The bridge is required for actual
+controller operation even when using only the Rust crate.
+
+Controller operation requires **Windows x64**. Run the bridge as Administrator
+for driver installation and controller creation. Rust builds and driver-free
+tests also run on other platforms. Application compatibility depends on the
+chosen profile and the application's input API; verify it in your target.
 
 ## Install on Windows x64
 
-Download the Windows x64 ZIP and its `.sha256` file from the [latest
-release](https://github.com/auron-labs/hidmaestro-rs/releases/latest). Verify
-the checksum before extracting:
+As of 29 September 2026, this repository has no published release bundle. Build
+from source; the [releases page](https://github.com/auron-labs/hidmaestro-rs/releases)
+is where future assets will appear. Upstream HIDMaestro downloads do not contain
+this project's MCP server and bridge.
+
+For the build, install Rust, .NET SDK 10, PowerShell 7 (`pwsh`), Visual Studio
+2022+ C++ tools for **x64 and ARM64**, and Windows SDK/WDK 10.0.26100.0. The pinned
+upstream builds both native payloads. See [prerequisite setup](docs/getting-started.md#requirements)
+for details. A completed self-contained bundle needs neither the SDK nor WDK on
+the machine running it.
+
+From a Windows PowerShell terminal in your source parent directory:
 
 ```powershell
-Get-FileHash .\hidmaestro-rs-<version>-win-x64.zip -Algorithm SHA256
-Get-Content .\hidmaestro-rs-<version>-win-x64.zip.sha256
-Expand-Archive .\hidmaestro-rs-<version>-win-x64.zip -DestinationPath .\hidmaestro
+git clone --recurse-submodules https://github.com/auron-labs/hidmaestro-rs.git
+Set-Location hidmaestro-rs
+pwsh -File scripts/package-windows.ps1 -Mode Stage
+Resolve-Path .\artifacts\stage\hidmaestro-rs-0.1.0-win-x64
 ```
 
-Run `hidmaestro-mcp.exe` from the extracted directory. It finds the sibling
-`hidmaestro-bridge.exe` automatically; no `PATH` or environment variable is
-needed for the bundle.
-
-```powershell
-Set-Location .\hidmaestro\hidmaestro-rs-<version>-win-x64
-.\hidmaestro-mcp.exe
-```
-
-The bridge and virtual driver are Windows x64 only. Installing the driver or
-creating controllers requires Administrator elevation.
-
-### MCP configuration
-
-Point an MCP client at the extracted executable:
-
-```json
-{
-  "mcpServers": {
-    "hidmaestro": {
-      "command": "C:\\tools\\hidmaestro\\hidmaestro-rs-<version>-win-x64\\hidmaestro-mcp.exe"
-    }
-  }
-}
-```
-
-The usual agent flow is `install_driver` → `load_profiles` → `list_profiles`
-→ `create_controller` with `profile_id: "xbox-360-wired"` → input tools such
-as `press_buttons`, `set_sticks`, and `set_dpad`. `drain_output_events` reports
-rumble, LED, and force-feedback output from games. Use `tap_buttons`,
-`hold_buttons`, or bounded `run_action_sequence` for timed input.
-
-Set `HIDMAESTRO_MCP_INACTIVITY_MS` to a positive duration in milliseconds to
-neutralize live controllers after MCP stdin inactivity. It is disabled by
-default.
+Keep the entire staged directory together. `cargo build` alone does not build
+the bridge or driver payload. Record the absolute staged path printed above.
 
 ### Elevated broker workflow
 
-To keep the MCP client unprivileged, start only the bridge from an **elevated**
-PowerShell or Command Prompt. Choose a safe pipe name: it starts with a letter
-or digit and then contains only letters, digits, `-`, `_`, or `.`.
+Open an **Administrator PowerShell** as the same Windows user as your MCP
+client. Change to the staged directory just printed, then run:
 
 ```powershell
 .\hidmaestro-bridge.exe --pipe hidmaestro-mcp
 ```
 
-Then give the regular MCP process the same pipe name:
+Leave this terminal open. The bridge waits for one local client. This extra step
+lets the assistant itself run without Administrator privileges. After that
+connection ends, the bridge exits; start it again for a new session.
+
+### MCP configuration
+
+In your **ordinary MCP client**, configure a stdio server. This is the shape for
+clients using `mcpServers`; replace the example absolute path with your staged
+executable's path:
 
 ```json
 {
   "mcpServers": {
     "hidmaestro": {
-      "command": "C:\\tools\\hidmaestro\\hidmaestro-rs-<version>-win-x64\\hidmaestro-mcp.exe",
+      "command": "C:\\src\\hidmaestro-rs\\artifacts\\stage\\hidmaestro-rs-0.1.0-win-x64\\hidmaestro-mcp.exe",
       "env": { "HIDMAESTRO_PIPE_NAME": "hidmaestro-mcp" }
     }
   }
 }
 ```
 
-The bridge accepts one client from the same Windows user, then exits when that
-client disconnects or sends `shutdown`. Do not pass a path or a `\\.\pipe\`
-prefix as the name.
+Let the client launch the server and discover its tools. Running the executable
+alone just waits for MCP input. [Connection details and direct spawning](docs/getting-started.md#connect-an-ordinary-mcp-client)
+cover other setups.
+
+### Create your first controller
+
+Call these tools through the client in order. Each cell is a tool name and its
+JSON argument object:
+
+| Step | Tool and arguments |
+|---|---|
+| Check readiness | `status` `{}` |
+| If `driver_installed` is false, perform initial setup | `install_driver` `{}` |
+| Load and inspect the profile | `load_profiles` `{}`, then `get_profile` `{"profile_id":"xbox-360-wired"}` |
+| Create a deployable profile | `create_controller` `{"profile_id":"xbox-360-wired"}` |
+| Obtain its key | `list_controllers` `{}`; read `structuredContent.items` |
+| Tap A | `tap_buttons` `{"controller":"c1","buttons":"a","duration_ms":80}` |
+| Move, then recenter | `set_sticks` `{"controller":"c1","left_x":0.75}`, then `set_sticks` `{"controller":"c1","left_x":0.5}` |
+| Release everything and unplug | `reset_controller` `{"controller":"c1"}`, then `remove_controller` `{"controller":"c1"}` |
+| End this bridge session | `shutdown` `{}`; disconnect the MCP server in your client |
+
+Use the actual returned key everywhere: `c1` is illustrative. Before sending
+input, let the target application enumerate the controller and open its input
+display or a menu where A has a known effect. Observe that effect; tool success
+and `get_state` only confirm submission/local state, not application reception.
+`wait_for_output_events` can observe feedback when the application sends it.
+
+Perform cleanup even if the application does not respond. Avoid
+`remove_all_controllers` for this task: it performs system-wide HIDMaestro cleanup.
+Driver installation also sweeps existing HIDMaestro devices, so use it only for
+the requested setup. See [MCP recipes](docs/mcp.md) for bounded sequences and
+feedback checks.
 
 ## Rust quick start
 
-Install the `hidmaestro` crate, published to crates.io with each release:
-
-```console
-cargo add hidmaestro
-```
-
-`HidMaestro::spawn()` prefers an explicit builder path, then
-`HIDMAESTRO_BRIDGE_PATH`, then a bridge next to the current executable, and
-finally `PATH`.
-
-```rust
-use hidmaestro::{Buttons, Hat, HidMaestro, StandardAxes};
-use std::time::Duration;
-
-let mut hm = HidMaestro::spawn()?;
-if !hm.is_driver_installed()? {
-    hm.install_driver()?; // elevated
-}
-hm.load_default_profiles()?;
-
-let mut pad = hm.create_controller("xbox-360-wired", None)?;
-pad.tap(Buttons::A, Duration::from_millis(80))?;
-pad.set_standard_axes(StandardAxes {
-    left_stick_x: Some(1.0),
-    left_trigger: Some(0.75),
-    ..Default::default()
-})?;
-pad.set_hat(Hat::North)?;
-pad.remove()?;
-# Ok::<(), hidmaestro::Error>(())
-```
-
-Axes are `0.0..=1.0` (`0.5` is stick center and `0.0` is trigger released).
-Descriptor-declared axes are also available from `state.axes` by HID usage.
-
-## Troubleshooting
-
-- **Bridge is not found:** run the MCP executable from the bundle directory,
-  set `HIDMAESTRO_BRIDGE_PATH` to `hidmaestro-bridge.exe`, or use
-  `HidMaestro::builder().bridge_path(...)`.
-- **Access denied or install/create fails:** run the bridge elevated. Use the
-  named-pipe broker above when the MCP client itself must remain unprivileged.
-- **Composite profile fails:** `-composite` profiles such as
-  `dualsense-composite` need the usbip-win2 backend; use the
-  `install_usbip_backend` tool first.
-- **More than four Xbox controllers:** XInput itself exposes at most four
-  Xbox-family controllers.
+Use the [Rust integration guide](docs/rust.md) for a pinned Git dependency and a
+complete program. `create_controller()` returns a key; obtain a borrowed
+controller view with `hm.controller(&key)?`. The same elevated bridge can serve
+a Rust client over a named pipe.
 
 ## Bundle contents and unsigned status
 
-The ZIP places `hidmaestro-mcp.exe` and `hidmaestro-bridge.exe` together,
-alongside the bridge's self-contained .NET runtime and `HIDMaestro.Core.dll`.
-That SDK assembly embeds the HIDMaestro driver, profile catalog, and transport
-payload required at runtime. The archive also includes this project's MIT
-license, HIDMaestro's license, and `UNSIGNED.txt`.
+The bundle includes the self-contained bridge runtime, MCP executable, upstream
+SDK/payload, licenses, and `UNSIGNED.txt`. It is unsigned. A checksum checks file
+integrity, not publisher trust. [Local driver certificate installation](docs/getting-started.md#bundle-contents-and-local-driver-trust)
+is separate from distribution signing.
 
-The bundle is **unsigned**. Verify its SHA-256 file before use. HIDMaestro
-creates and trusts its own local certificate when it installs its user-mode
-driver; that is separate from signing this distribution archive.
+## Troubleshooting
+
+Start with [symptom-to-fix guidance](docs/troubleshooting.md) for connection,
+profile, stuck-input, and feedback problems.
 
 ## Source development
 
-Clone with the pinned upstream submodule, then run the normal checks:
+- [Build and connect](docs/getting-started.md)
+- [Operate through MCP](docs/mcp.md) or [integrate with Rust](docs/rust.md)
+- [Look up input and feedback semantics](docs/input-reference.md)
+- [Contribute, test, package, and release](docs/development.md)
 
-```powershell
-git clone --recurse-submodules https://github.com/auron-labs/hidmaestro-rs.git
-cd hidmaestro-rs
-mise install
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --locked
-cargo metadata --locked --format-version 1
-```
-
-On a Windows x64 machine with .NET 10, Visual Studio Build Tools, and Windows
-SDK/WDK 10.0.26100.0, create the bundle with:
-
-```powershell
-pwsh -File scripts/package-windows.ps1
-```
-
-The script uses `vendor/HIDMaestro` by default. Pass `-HMRepoRoot` or set
-`HM_REPO_ROOT` to build against another HIDMaestro checkout. Use `-Mode Stage`
-to stage a local bundle without producing a ZIP. See
-[development notes](docs/development.md) for hosted-CI limitations and release
-ownership.
-
-Ordinary CI does not install the driver. On an elevated Windows x64 machine
-with the WDK prerequisites, the manual MCP/XInput smoke validation is:
-
-```powershell
-pwsh -File scripts/package-windows.ps1 -Mode Stage
-pwsh -File scripts/smoke-windows.ps1
-```
-
-This is also available as the manual-only **Windows elevated smoke** workflow;
-it is intentionally not run for every push or pull request.
+For agents: [repository instructions](AGENTS.md) · [MCP operating procedure](docs/agent-usage.md).
 
 ## License
 
