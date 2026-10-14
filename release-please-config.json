@@ -1,16 +1,21 @@
 {
-  "release-type": "rust",
+  "release-type": "simple",
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "packages": {
     ".": {
-      "release-type": "rust",
       "package-name": "hidmaestro-rs",
+      "initial-version": "0.1.0",
       "extra-files": [
         {
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value == 'hidmaestro' || @.name.value == 'hidmaestro-mcp')].version"
         }
       ]
     }
