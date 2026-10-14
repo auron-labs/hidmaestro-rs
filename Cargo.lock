@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "hidmaestro"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bitflags",
  "serde",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "hidmaestro-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hidmaestro",
  "serde",
