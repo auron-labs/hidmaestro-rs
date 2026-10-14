@@ -214,7 +214,12 @@ the upstream resource-pack build succeeded.
 Release Please owns version bumps, `vX.Y.Z` tags, changelog updates, and GitHub
 releases on `main`, using [its configuration](../release-please-config.json)
 and [manifest](../.release-please-manifest.json). Do not create versions, tags,
-or releases by hand. The [release workflow](../.github/workflows/release-please.yml)
+or releases by hand. The `simple` strategy tracks [version.txt](../version.txt)
+and explicitly updates `workspace.package.version` and both workspace packages
+in `Cargo.lock`; the Rust strategy does not support this virtual workspace's
+inherited package versions. The lockfile JSONPath uses `name.value` because
+Release Please's TOML updater wraps scalar values with source-location metadata.
+The [release workflow](../.github/workflows/release-please.yml)
 runs Release Please on hosted Ubuntu. After a release is created, its packaging
 job uses a maintained self-hosted Windows x64 runner labelled
 `hidmaestro-release`, with MSVC/WDK prerequisites, to build and attach the
