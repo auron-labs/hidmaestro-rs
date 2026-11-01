@@ -76,7 +76,6 @@ From the repository root, build and stage:
 
 ```powershell
 pwsh -File scripts/package-windows.ps1 -Mode Stage
-Resolve-Path .\artifacts\stage\hidmaestro-rs-0.1.0-win-x64
 ```
 
 The script builds upstream native payloads and the SDK, publishes the
@@ -85,6 +84,10 @@ self-contained bridge, builds the release MCP executable, then prints
 version, that directory is `artifacts\stage\hidmaestro-rs-0.1.0-win-x64`.
 Use the printed path if working on a later version. `cargo build` produces only
 the Rust components. Build option details belong in [development](development.md#windows-bundle).
+
+Copy the **contents of that entire staged directory** to a new installation
+directory, such as `C:\Tools\hidmaestro`. Keep the runtime files together; use
+this stable path in client configuration rather than a versioned build path.
 
 ## Bundle contents and local driver trust
 
@@ -111,10 +114,10 @@ do it as setup, not as a routine response to an input error.
 
 Use the named-pipe broker so only the bridge needs elevation. Open an
 Administrator PowerShell **as the same Windows user** as the ordinary client.
-Starting in the repository root after staging:
+After copying the complete bundle to `C:\Tools\hidmaestro`:
 
 ```powershell
-Set-Location .\artifacts\stage\hidmaestro-rs-0.1.0-win-x64
+Set-Location C:\Tools\hidmaestro
 .\hidmaestro-bridge.exe --pipe hidmaestro-mcp
 ```
 
@@ -144,7 +147,7 @@ or moved bundle:
 {
   "mcpServers": {
     "hidmaestro": {
-      "command": "C:\\src\\hidmaestro-rs\\artifacts\\stage\\hidmaestro-rs-0.1.0-win-x64\\hidmaestro-mcp.exe",
+      "command": "C:\\Tools\\hidmaestro\\hidmaestro-mcp.exe",
       "env": {
         "HIDMAESTRO_PIPE_NAME": "hidmaestro-mcp"
       }

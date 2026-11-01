@@ -857,7 +857,7 @@ fn tools() -> Value {
         },
         {
             "name": "install_driver",
-            "description": "Install the HIDMaestro UMDF2 driver. Requires an elevated host the first time.",
+            "description": "Install/sign the HIDMaestro UMDF2 driver through an elevated bridge. First sweeps HIDMaestro virtual devices system-wide, including other sessions, even when the same driver build is already installed. Use only for requested setup when the driver is missing.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -909,7 +909,7 @@ fn tools() -> Value {
         },
         {
             "name": "remove_all_controllers",
-            "description": "Remove every virtual controller, including strays from previous sessions.",
+            "description": "System-wide HIDMaestro cleanup through an elevated bridge: removes virtual devices, including other sessions and strays, and attempts to remove driver packages and configuration. Cleanup is best-effort. Use only for deliberately requested broad cleanup; normally reset_controller and remove_controller for each controller created by the task.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {

@@ -541,8 +541,10 @@ impl HidMaestro {
             .unwrap_or(false))
     }
 
-    /// Extract, sign, and install the UMDF2 driver package. Requires
-    /// elevation (administrator) on first run.
+    /// Extract, sign, and install the UMDF2 driver package through an elevated
+    /// bridge. First sweeps HIDMaestro virtual devices system-wide, including
+    /// other sessions, even if the same driver build is already installed.
+    /// Call only for requested setup when [`Self::is_driver_installed`] is false.
     pub fn install_driver(&mut self) -> Result<()> {
         self.rpc("install_driver", None::<()>)?;
         Ok(())
@@ -676,8 +678,11 @@ impl HidMaestro {
         Ok(())
     }
 
-    /// Remove every virtual controller created by this session's driver
-    /// install (including strays from previous unclean exits).
+    /// Perform system-wide HIDMaestro cleanup through an elevated bridge,
+    /// including other sessions' devices and strays. Also attempts to remove
+    /// driver packages and configuration; upstream cleanup is best-effort.
+    /// For ordinary cleanup, reset and [`Self::remove_controller`] only the
+    /// controllers created by your task.
     pub fn remove_all_controllers(&mut self) -> Result<()> {
         self.rpc("remove_all_controllers", None::<()>)?;
         self.controllers.clear();

@@ -21,6 +21,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo metadata --locked --format-version 1 > /dev/null
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: check
+      - name: Test release archive layout and checksum
+        run: bash scripts/test-goreleaser.sh
+      - run: cargo publish --package hidmaestro --dry-run --locked
 
   windows:
     name: Windows source validation
@@ -41,10 +48,15 @@ jobs:
           dotnet restore bridge/HIDMaestro.Bridge/HIDMaestro.Bridge.csproj /p:HMRepoRoot="$PWD/vendor/HIDMaestro"
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            "$PWD/scripts/package-windows.ps1", [ref]$tokens, [ref]$errors
-          ) | Out-Null
-          if ($errors.Count) { throw ($errors | Format-List | Out-String) }
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count) { throw ($errors | Format-List | Out-String) }
+          }
           if ((git -C vendor/HIDMaestro rev-parse HEAD) -ne '942e25aa9ce4e93dc601f59a796f7432809fc41b') {
             throw 'Pinned HIDMaestro submodule commit is incorrect.'
           }
+      - name: Test packaging scripts and release versions without native devices
+        shell: pwsh
+        run: ./scripts/test-release.ps1

@@ -18,10 +18,14 @@ bridge. The Rust crate itself compiles on other platforms for driver-free tests.
 
 ## Create, drive, and remove a controller
 
-Start `hidmaestro-bridge.exe --pipe hidmaestro-mcp` as Administrator, under the
-same Windows user as this program. This example performs initial driver setup
-only if missing. Installation can remove existing HIDMaestro devices, so run
-that setup on a host where this is intended.
+Complete [initial driver setup](mcp.md#create-your-first-controller) separately;
+installation can remove existing HIDMaestro devices. Start
+`hidmaestro-bridge.exe --pipe hidmaestro-mcp` as Administrator, under the same
+Windows user as this program. The example does not install drivers.
+
+For explicitly authorized first-time setup from Rust, check
+`hm.is_driver_installed()?` and call `hm.install_driver()?` only if missing.
+Do that separately from the input example; installation sweeps existing devices.
 
 Save as `src/main.rs`:
 
@@ -33,13 +37,10 @@ fn main() -> hidmaestro::Result<()> {
     let mut hm = HidMaestro::builder()
         .pipe_name("hidmaestro-mcp")
         .spawn()?;
-    if !hm.is_driver_installed()? {
-        hm.install_driver()?;
-    }
     hm.load_default_profiles()?;
 
     let key = hm.create_controller("xbox-360-wired", None)?;
-    {
+    let input = (|| -> hidmaestro::Result<()> {
         let mut pad = hm.controller(&key)?;
         pad.tap(Buttons::A, Duration::from_millis(80))?;
         pad.set_standard_axes(StandardAxes {
@@ -48,9 +49,13 @@ fn main() -> hidmaestro::Result<()> {
             ..Default::default()
         })?;
         std::thread::sleep(Duration::from_millis(100));
-        pad.reset()?;
-    }
-    hm.remove_controller(&key)?;
+        Ok(())
+    })();
+    let reset = hm.controller(&key).and_then(|mut pad| pad.reset());
+    let remove = hm.remove_controller(&key);
+    input?;
+    reset?;
+    remove?;
     hm.shutdown();
     Ok(())
 }
@@ -62,10 +67,11 @@ submission and cleanup; successful returns do not prove that an application
 observed the state. Axes use 0–1, with sticks centered at 0.5 and triggers released
 at 0.0.
 
-The `?` paths drop the session on error, requesting bridge shutdown. For a
-longer-lived test session, explicitly attempt reset/removal on failure instead
-of continuing with uncertain held input. A failed tap release can leave the last
-confirmed pressed state active, as the [fake-bridge test](../crates/hidmaestro/tests/fake_bridge.rs)
+The example attempts reset and removal even if an input operation fails. Its
+`?` paths then drop the session on error, requesting bridge shutdown. Cleanup
+attempts can also fail; do not continue with uncertain held input. A failed tap
+release can leave the last confirmed pressed state active, as the
+[fake-bridge test](../crates/hidmaestro/tests/fake_bridge.rs)
 demonstrates.
 
 ## Choose a connection

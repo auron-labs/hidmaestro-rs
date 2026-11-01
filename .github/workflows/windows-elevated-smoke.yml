@@ -8,25 +8,41 @@ permissions:
 
 jobs:
   smoke:
-    # This maintained runner has Windows x64, MSVC, and the WDK. The script
-    # installs a driver, so this workflow is deliberately manual-only.
-    runs-on: [self-hosted, windows, x64, hidmaestro-release]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    # Driver installation/cleanup is confined to GitHub's disposable VM.
+    runs-on: windows-2025
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           submodules: recursive
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - name: Package staged Windows bundle
+      - name: Prepare Windows driver build tools
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Mode Stage
-      - name: Exercise MCP through XInput
+        run: ./scripts/setup-windows-runner.ps1 *>&1 | Tee-Object -FilePath windows-tools.log
+      - name: Package Windows ZIP
         shell: pwsh
-        run: ./scripts/smoke-windows.ps1
-      - name: Remove staged bundle
+        run: ./scripts/package-windows.ps1 *>&1 | Tee-Object -FilePath package.log
+      - name: Exercise extracted ZIP through XInput
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          ./scripts/test-bundle-windows.ps1 -ArchivePath "artifacts/hidmaestro-rs-$version-win-x64.zip" -Version $version -ExtractionDirectory extracted-bundle *>&1 | Tee-Object -FilePath smoke.log
+      - name: Retain bundle and diagnostics
         if: ${{ always() }}
-        shell: pwsh
-        run: Remove-Item -LiteralPath ./artifacts/stage -Recurse -Force -ErrorAction SilentlyContinue
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-smoke-${{ github.sha }}
+          overwrite: true
+          path: |
+            package.log
+            windows-tools.log
+            smoke.log
+            ${{ runner.temp }}/hidmaestro-wdk/*.log
+            artifacts/*.zip
+            artifacts/*.zip.sha256

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$BundleDirectory = (Join-Path $PSScriptRoot '..\artifacts\stage'),
+    [string]$ExpectedVersion,
     [ValidateRange(5, 120)]
     [int]$TimeoutSeconds = 30
 )
@@ -76,14 +77,14 @@ function Read-McpResponse {
         throw "MCP stdout closed while waiting for '$Method' (request $RequestId)."
     }
     try {
-        $response = $line | ConvertFrom-Json -Depth 30
+        $response = $line | ConvertFrom-Json -Depth 30 -AsHashtable
     } catch {
         throw "MCP returned invalid JSON for '$Method': $line"
     }
     if ($response.id -ne $RequestId) {
         throw "MCP response id '$($response.id)' did not match request $RequestId for '$Method'."
     }
-    if ($null -ne $response.error) {
+    if ($response.ContainsKey('error')) {
         throw "MCP protocol error for '$Method': $($response.error.code) $($response.error.message)"
     }
     return $response.result
@@ -114,7 +115,7 @@ function Invoke-McpTool {
         name = $Name
         arguments = $Arguments
     }
-    if ($result.isError -eq $true) {
+    if ($result.ContainsKey('isError') -and $result.isError -eq $true) {
         $message = @($result.content | ForEach-Object { $_.text }) -join [Environment]::NewLine
         throw "MCP tool '$Name' failed: $message"
     }
@@ -234,12 +235,17 @@ $script:McpDiagnostics = [System.Collections.Concurrent.ConcurrentQueue[string]]
 $script:NextRequestId = 1
 $script:RpcTimeoutMilliseconds = [Math]::Min($TimeoutSeconds * 1000, 30000)
 $controller = $null
+$nativeChecksStarted = $false
 
 try {
     Write-Host "Starting MCP server from $bundle"
     Start-Mcp -Executable $mcpExecutable -WorkingDirectory $bundle
-    Invoke-Mcp -Method 'initialize' -Parameters @{ protocolVersion = '2025-03-26' } | Out-Null
+    $initialized = Invoke-Mcp -Method 'initialize' -Parameters @{ protocolVersion = '2025-03-26' }
+    if ($ExpectedVersion -and $initialized.serverInfo.version -cne $ExpectedVersion) {
+        throw "MCP version '$($initialized.serverInfo.version)' differs from '$ExpectedVersion'."
+    }
 
+    $nativeChecksStarted = $true
     Invoke-CleanupTool -Name 'remove_all_controllers'
     $baselineSlots = @(Get-XInputStates | ForEach-Object { $_.Slot })
     if ($baselineSlots.Count -eq 4) {
@@ -275,7 +281,9 @@ try {
     if ($null -ne $controller) {
         Invoke-CleanupTool -Name 'reset_controller' -Arguments @{ controller = $controller }
     }
-    Invoke-CleanupTool -Name 'remove_all_controllers'
+    if ($nativeChecksStarted) {
+        Invoke-CleanupTool -Name 'remove_all_controllers'
+    }
     Invoke-CleanupTool -Name 'shutdown'
     if ($null -ne $script:Mcp) {
         try { $script:Mcp.StandardInput.Close() } catch { Write-Warning "Could not close MCP stdin: $($_.Exception.Message)" }
