@@ -220,10 +220,9 @@ workflow builds and stages the bundle but does not install drivers or run
 XInput validation. Neither workflow needs an owner-supplied Windows runner.
 
 [Runner setup](../scripts/setup-windows-runner.ps1) checks the preinstalled
-Visual Studio x64/ARM64 tools and SDK 10.0.26100.0, and installs Microsoft's
-WDK 26100.6584 when required files are absent. It verifies the installer's
-Microsoft Authenticode signature and required build files. The WDK revision
-uses the `10.0.26100.0` kit directory expected by the pinned upstream scripts.
+Visual Studio x64/ARM64 tools and SDK 10.0.26100.0. It verifies and unpacks
+Microsoft's pinned x64 and ARM64 WDK NuGet packages and passes their roots to
+the upstream build without installing the WDK on the runner.
 See GitHub's [Windows 2025 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
 and Microsoft's [WDK downloads](https://learn.microsoft.com/windows-hardware/drivers/other-wdk-downloads).
 This provisioning script refuses to run outside a GitHub-hosted Windows job.
