@@ -24,7 +24,8 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: v2.18.2
-          args: check
+          install-only: true
+      - run: goreleaser check
       - name: Test release archive layout and checksum
         run: bash scripts/test-goreleaser.sh
       - run: cargo publish --package hidmaestro --dry-run --locked
