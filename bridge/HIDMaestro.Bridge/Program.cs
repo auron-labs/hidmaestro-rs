@@ -277,11 +277,22 @@ JsonNode? Dispatch(string method, JsonObject p)
             var profileId = ReqStr(p, "profile_id");
             var profile = ctx.GetProfile(profileId)
                 ?? throw new ArgumentException($"profile '{profileId}' not found");
-            // RPC keys are session-local; upstream identity keys are machine-wide.
             var key = $"c{++nextKey}";
-            HMController ctrl = p["index"] is JsonNode idx
-                ? ctx.CreateControllerAt(idx.GetValue<int>(), profile)
-                : ctx.CreateController(profile);
+            int? index = p["index"]?.GetValue<int>();
+            HMController Create(string? identityKey) => index is int slot
+                ? ctx.CreateControllerAt(slot, profile, identityKey)
+                : ctx.CreateController(profile, identityKey);
+
+            HMController ctrl;
+            try
+            {
+                ctrl = Create(key);
+            }
+            catch (HMResourceInUseException error) when (error.Resource == $"identity key '{key}'")
+            {
+                // Keep legacy device paths when free; another bridge may already own this identity.
+                ctrl = Create(null);
+            }
             controllers[key] = ctrl;
             HookEvents(ctrl, key);
             return new JsonObject { ["key"] = key, ["profile_id"] = profileId };

@@ -112,6 +112,11 @@ response to an input error. It leaves devices owned by running HIDMaestro 2.x
 programs in place. Upgrade other HIDMaestro 1.x programs before running them
 alongside this bundle: a 1.x install or first create can remove 2.x devices.
 
+When creating a controller, the bridge tries its previous Windows device
+identity first. If another running controller already owns that identity, it
+uses a free one instead. An app that saved a Windows device path may need to
+rebind the controller in that case.
+
 ## Run the bridge as Administrator
 
 Use the named-pipe broker so only the bridge needs elevation. Open an
