@@ -32,7 +32,7 @@ jobs:
 
   windows:
     name: Windows source validation
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,10 +43,9 @@ jobs:
           dotnet-version: 10.0.x
       - run: cargo build --workspace --release --locked
       - run: cargo test --workspace --locked
-      - name: Restore bridge and validate packaging script
+      - name: Validate the HIDMaestro pin and PowerShell scripts
         shell: pwsh
         run: |
-          dotnet restore bridge/HIDMaestro.Bridge/HIDMaestro.Bridge.csproj /p:HMRepoRoot="$PWD/vendor/HIDMaestro"
           $tokens = $null
           $errors = $null
           Get-ChildItem scripts/*.ps1 | ForEach-Object {
@@ -55,9 +54,39 @@ jobs:
             ) | Out-Null
             if ($errors.Count) { throw ($errors | Format-List | Out-String) }
           }
-          if ((git -C vendor/HIDMaestro rev-parse HEAD) -ne '942e25aa9ce4e93dc601f59a796f7432809fc41b') {
+          if ((git -C vendor/HIDMaestro rev-parse HEAD) -ne 'c28c1f640d89038154b0962ae01627e0cda37cb0') {
             throw 'Pinned HIDMaestro submodule commit is incorrect.'
           }
       - name: Test packaging scripts and release versions without native devices
         shell: pwsh
         run: ./scripts/test-release.ps1
+      - name: Prepare Windows driver build tools
+        shell: pwsh
+        run: ./scripts/setup-windows-runner.ps1
+      - name: Build the pinned SDK and stage the Windows bundle
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Mode Stage
+      - name: Check the published bridge without native devices
+        shell: pwsh
+        run: |
+          $bridge = @(Get-ChildItem artifacts/stage -Filter hidmaestro-bridge.exe -Recurse)
+          if ($bridge.Count -ne 1) { throw 'Expected one staged bridge executable.' }
+          $requests = @(
+            '{"id":1,"method":"ping"}'
+            '{"id":2,"method":"load_profiles"}'
+            '{"id":3,"method":"get_profile","params":{"id":"xbox-360-wired"}}'
+            '{"id":4,"method":"shutdown"}'
+          )
+          $replies = @($requests | & $bridge[0].FullName | ForEach-Object { ConvertFrom-Json -InputObject $_ })
+          if ($LASTEXITCODE -ne 0 -or $replies.Count -ne $requests.Count) {
+            throw 'Bridge did not return one reply per request.'
+          }
+          for ($i = 0; $i -lt $replies.Count; $i++) {
+            if (!$replies[$i].ok -or $replies[$i].id -ne ($i + 1)) {
+              throw "Unexpected bridge reply: $($replies[$i] | ConvertTo-Json -Compress)"
+            }
+          }
+          if ($replies[0].result -ne 'pong' -or $replies[1].result -le 0 -or
+              $replies[2].result.id -ne 'xbox-360-wired' -or !$replies[2].result.deployable) {
+            throw 'Bridge did not load the expected built-in profile.'
+          }

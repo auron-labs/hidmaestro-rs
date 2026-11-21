@@ -11,8 +11,8 @@ protocol messages. Responses are illustrative, not captured device results.
 1. Call **`status`** with `{}`. Its `structuredContent` contains
    `driver_installed` and `controllers`. If the driver is missing and you are
    performing the requested initial setup, call **`install_driver`** with `{}`.
-   Installation requires the already-elevated bridge and sweeps existing
-   HIDMaestro devices before deployment. Do not repeat it after every error.
+   Installation requires the already-elevated bridge and can reclaim orphaned
+   devices. Do not repeat it after every error.
 2. Call **`load_profiles`** with `{}`, then **`list_profiles`** with
    `{"filter":"xbox"}`. Inspect **`get_profile`** with
    `{"profile_id":"xbox-360-wired"}`. Choose a profile with `deployable: true`;
@@ -186,7 +186,7 @@ Below, **text** means `content: [{"type":"text","text":"…"}]` without
 |---|---|---|
 | `start` | None (`{}`) | Text: bridge running/pong. Connects or spawns, and pings. Reconnects after a detected `BridgeExited`; does not recover old keys. In pipe mode it cannot launch a missing external broker. |
 | `status` | None | JSON object: `driver_installed` boolean, `controllers` array of key/profile pairs. Connects if needed; does not install a driver. |
-| `install_driver` | None | Text. Requires elevation; extracts/signs/installs the HIDMaestro driver. Upstream first sweeps HIDMaestro virtual devices system-wide, even before its same-build installation fast path. Use for requested setup. |
+| `install_driver` | None | Text. Requires elevation; extracts/signs/installs the HIDMaestro driver. May reclaim orphaned devices but leaves devices owned by running HIDMaestro 2.x programs in place. Use for requested setup. |
 | `install_usbip_backend` | None | Text. Elevated installation of the bundled optional usbip-win2 backend. Choose it only when the requested profile/setup needs it; it is unnecessary for the Xbox 360 walkthrough. |
 
 ### Profiles and controllers

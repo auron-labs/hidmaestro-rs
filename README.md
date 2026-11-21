@@ -58,8 +58,8 @@ In your ordinary MCP client, add a stdio server. For clients using `mcpServers`:
 ```
 
 Complete [first-time driver setup](docs/mcp.md#create-your-first-controller)
-explicitly before requesting input. Installation sweeps existing HIDMaestro
-devices; it is not implicitly authorized by the task below.
+explicitly before requesting input. Driver installation is not implicitly
+authorized by the task below.
 
 Then ask:
 
