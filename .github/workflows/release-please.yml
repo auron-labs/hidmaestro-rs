@@ -66,7 +66,6 @@ jobs:
           path: |
             windows-tools.log
             package.log
-            ${{ runner.temp }}/hidmaestro-wdk/*.log
 
   publish:
     needs: [release-please, package]

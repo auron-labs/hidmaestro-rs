@@ -18,7 +18,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="$(HMRepoRoot)\sdk\HIDMaestro.Core\HIDMaestro.Core.csproj" />
+    <ProjectReference Include="$(HMRepoRoot)\sdk\HIDMaestro.Core\HIDMaestro.Core.csproj"
+                      GlobalPropertiesToRemove="HMRepoRoot" />
   </ItemGroup>
 
 </Project>

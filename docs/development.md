@@ -24,8 +24,8 @@ cd hidmaestro-rs
 ```
 
 Use `git submodule update --init --recursive` from an existing clone to recover
-missing upstream sources. `vendor/HIDMaestro` is pinned to
-`942e25aa9ce4e93dc601f59a796f7432809fc41b`; ordinary development should use it.
+missing upstream sources. `vendor/HIDMaestro` is pinned to v2.1.0
+(`c28c1f640d89038154b0962ae01627e0cda37cb0`); ordinary development should use it.
 
 ## Find the behavior to change
 
@@ -123,10 +123,10 @@ pwsh -File scripts/package-windows.ps1
 
 The [packaging script](../scripts/package-windows.ps1) calls upstream
 `scripts\build_all.cmd`, which builds x64 and ARM64 drivers/companions and the
-x64 OpenVR payload, then builds the managed SDK twice. The first pass stages
-resources; the second embeds them. The upstream resource target requires both
-native architectures, WDK signing/catalog tools, and verified pinned usbip-win2
-installer payloads. A standalone bridge build or restore cannot replace this
+x64 OpenVR payload, then builds the managed SDK. The SDK stages and embeds
+resources in the same build. By default the upstream resource target requires
+both native architectures, WDK signing/catalog tools, and verified pinned
+usbip-win2 installer payloads. A standalone restore cannot replace this
 native preparation.
 
 Next the script publishes the bridge in Release for `win-x64` with
@@ -159,9 +159,9 @@ fixed binary location.
 For direct MSBuild work, bridge property `HMRepoRoot` overrides environment
 `HM_REPO_ROOT`, then falls back to the submodule. These are build-only settings,
 not runtime bridge-discovery variables. Upstream native scripts additionally
-accept `HM_WDK_VERSION` and paired `HM_ARM64_COMPILER_DIR`/`HM_ARM64_CRT_DIR`;
-the SDK resource pack still explicitly references 10.0.26100.0 tools, so changing
-the native override alone does not change all kit dependencies.
+accept `HM_WDK_VERSION` and paired `HM_ARM64_COMPILER_DIR`/`HM_ARM64_CRT_DIR`.
+See the [upstream build settings](../vendor/HIDMaestro/docs/design/coexistence.md#building-from-source)
+for SDK/WDK overrides.
 
 ## Manual elevated smoke validation
 
@@ -220,10 +220,9 @@ workflow builds and stages the bundle but does not install drivers or run
 XInput validation. Neither workflow needs an owner-supplied Windows runner.
 
 [Runner setup](../scripts/setup-windows-runner.ps1) checks the preinstalled
-Visual Studio x64/ARM64 tools and SDK 10.0.26100.0, and installs Microsoft's
-WDK 26100.6584 when required files are absent. It verifies the installer's
-Microsoft Authenticode signature and required build files. The WDK revision
-uses the `10.0.26100.0` kit directory expected by the pinned upstream scripts.
+Visual Studio x64/ARM64 tools and SDK 10.0.26100.0. It verifies and unpacks
+Microsoft's pinned x64 and ARM64 WDK NuGet packages and passes their roots to
+the upstream build without installing the WDK on the runner.
 See GitHub's [Windows 2025 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
 and Microsoft's [WDK downloads](https://learn.microsoft.com/windows-hardware/drivers/other-wdk-downloads).
 This provisioning script refuses to run outside a GitHub-hosted Windows job.
@@ -231,11 +230,10 @@ This provisioning script refuses to run outside a GitHub-hosted Windows job.
 ## CI and releases
 
 [Ordinary CI](../.github/workflows/ci.yml) runs Rust checks on hosted Ubuntu.
-Hosted Windows builds/tests Rust, restores the bridge's .NET project,
-syntax-checks the packaging script, and verifies the pinned submodule commit.
-It does not run packaging, compile the native driver, install devices, or run
-XInput validation. A passing restore does not establish that `Program.cs` and
-the upstream resource-pack build succeeded.
+Hosted Windows builds/tests Rust, checks PowerShell syntax and the submodule
+pin, builds the complete staged bundle, and checks that the published bridge
+starts and loads a built-in profile over stdio. It does not install drivers,
+create devices, or run XInput validation.
 
 Release Please owns version bumps, `vX.Y.Z` tags, changelogs, and draft GitHub
 releases on `main`, using [its configuration](../release-please-config.json)

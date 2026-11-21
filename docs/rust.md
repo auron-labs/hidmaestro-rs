@@ -25,7 +25,7 @@ Windows user as this program. The example does not install drivers.
 
 For explicitly authorized first-time setup from Rust, check
 `hm.is_driver_installed()?` and call `hm.install_driver()?` only if missing.
-Do that separately from the input example; installation sweeps existing devices.
+Do that separately from the input example; installation can reclaim orphaned devices.
 
 Save as `src/main.rs`:
 

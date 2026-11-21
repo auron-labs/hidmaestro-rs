@@ -43,6 +43,5 @@ jobs:
             package.log
             windows-tools.log
             smoke.log
-            ${{ runner.temp }}/hidmaestro-wdk/*.log
             artifacts/*.zip
             artifacts/*.zip.sha256

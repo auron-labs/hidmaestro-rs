@@ -12,9 +12,8 @@ mode an elevated broker must already be running under the same Windows user;
 the user the bridge startup step from the setup guide.
 
 Install the driver only when missing as part of the requested setup. Installation
-requires an elevated bridge and sweeps existing HIDMaestro virtual devices.
-The sweep is system-wide, includes other sessions, and runs even when the same
-driver build is already installed.
+requires an elevated bridge and can reclaim orphaned HIDMaestro virtual
+devices. It leaves devices owned by running HIDMaestro 2.x programs in place.
 Do not reinstall it or install a backend reflexively after an input error.
 Load profiles, inspect candidates, and choose one with `deployable: true` suited
 to the application's input API. `xbox-360-wired` is the simple first choice.
