@@ -1,9 +1,14 @@
 {
   "release-type": "simple",
+  "version-file": ".release-please-version",
+  "initial-version": "0.1.0",
+  "draft": true,
+  "force-tag-creation": true,
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "packages": {
     ".": {
+      "release-type": "simple",
       "package-name": "hidmaestro-rs",
       "initial-version": "0.1.0",
       "extra-files": [
@@ -15,7 +20,7 @@
         {
           "type": "toml",
           "path": "Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value == 'hidmaestro' || @.name.value == 'hidmaestro-mcp')].version"
+          "jsonpath": "$.package[?(!@.source && (@.name.value == 'hidmaestro' || @.name.value == 'hidmaestro-mcp'))].version"
         }
       ]
     }

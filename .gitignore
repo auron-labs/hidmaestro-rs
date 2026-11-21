@@ -1,4 +1,5 @@
 /target
 /artifacts
+/dist
 **/bin/
 **/obj/

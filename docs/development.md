@@ -76,6 +76,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 cargo metadata --locked --format-version 1
+cargo publish --package hidmaestro --dry-run --locked
 ```
 
 These check formatting, compile/lint all Rust targets, run unit/process/rustdoc
@@ -136,7 +137,7 @@ copies the entire publish directory, MCP executable, licenses and unsigned notic
 |---|---|
 | `-Mode Package` | Default: stage, ZIP, and SHA-256 file |
 | `-Mode Stage` | Build/stage only; print `Staged bundle:` and exit without archiving |
-| `-Version` | Defaults to `workspace.package.version` in root `Cargo.toml`; overrides the bundle name, not package versions |
+| `-Version` | Defaults to `workspace.package.version` in root `Cargo.toml`; an explicit value must match. Stamps the bridge's version and informational version as well as bundle names. |
 | `-HMRepoRoot` | Defaults to `HM_REPO_ROOT`, then the pinned `vendor\HIDMaestro`; alternate checkout for intentional upstream integration work |
 | `-SkipUpstreamBuild` | Skip only the upstream build; requires already-built, current native/embedded payloads |
 | `-OutputDirectory` | Defaults to repository `artifacts`; relative overrides resolve from the calling directory |
@@ -164,7 +165,13 @@ the native override alone does not change all kit dependencies.
 
 ## Manual elevated smoke validation
 
-Use a dedicated Windows x64 host available for mutation. The
+Use the **Windows elevated smoke** workflow on `main` to build and test on a
+fresh GitHub-hosted `windows-2025` VM. You do not need to connect your own
+Windows computer or configure a GitHub environment. The workflow prepares the
+driver build tools, packages the ZIP, tests its extracted contents, and retains
+the bundle and logs. The VM is discarded after the job.
+
+For optional local testing, use only a disposable Windows x64 test host. The
 [smoke script](../scripts/smoke-windows.ps1) can install the driver and calls
 `remove_all_controllers` **before and after** its checks. That reaches upstream
 system-wide HIDMaestro cleanup, including controllers outside this task and
@@ -177,16 +184,25 @@ the WDK/native tools above; running an already-built bundle does not. Unset
 `HIDMAESTRO_PIPE_NAME` and `HIDMAESTRO_BRIDGE_PATH` for this procedure so the
 script's MCP process spawns the staged sibling bridge with inherited elevation.
 
-From the repository root in that dedicated elevated session:
+For local testing, from the repository root in that elevated session, package the ZIP
+and validate a fresh extraction:
 
 ```powershell
-pwsh -File scripts/package-windows.ps1 -Mode Stage
-pwsh -File scripts/smoke-windows.ps1
+pwsh -File scripts/package-windows.ps1
+pwsh -File scripts/test-bundle-windows.ps1 -ArchivePath artifacts/hidmaestro-rs-0.1.0-win-x64.zip -Version 0.1.0 -ExtractionDirectory artifacts/smoke-extracted
 ```
+
+Substitute the workspace version for `0.1.0`. The extraction directory must not
+already exist. The validation wrapper checks the ZIP checksum, required files,
+and bridge informational version before running the native smoke script against
+the extracted files. The smoke script also checks the MCP-reported version. The
+wrapper clears bridge/pipe overrides and requires the accompanying checksum.
 
 `-BundleDirectory` can name the bundle directly or a parent containing exactly
 one bundle (default `artifacts\stage`). `-TimeoutSeconds` is 5–120, default 30;
 individual MCP response waits are capped at 30 seconds by the script.
+`-ExpectedVersion` optionally checks the MCP version returned by initialization;
+the extracted-ZIP wrapper always supplies it.
 
 The script initializes legacy MCP, broadly cleans devices, records existing
 XInput slots, checks/installs the driver, loads profiles, and creates an
@@ -199,8 +215,18 @@ Windows input APIs.
 In `finally`, it attempts to reset its key, performs broad cleanup again,
 requests bridge shutdown, closes MCP stdin, and waits for process exit (with a
 kill fallback). Cleanup failures are warnings, not proof all cleanup succeeded.
-The manual-only **Windows elevated smoke** workflow performs this procedure on
-the self-hosted `hidmaestro-release` runner.
+This manual workflow is separate from release publication. The release
+workflow builds and stages the bundle but does not install drivers or run
+XInput validation. Neither workflow needs an owner-supplied Windows runner.
+
+[Runner setup](../scripts/setup-windows-runner.ps1) checks the preinstalled
+Visual Studio x64/ARM64 tools and SDK 10.0.26100.0, and installs Microsoft's
+WDK 26100.6584 when required files are absent. It verifies the installer's
+Microsoft Authenticode signature and required build files. The WDK revision
+uses the `10.0.26100.0` kit directory expected by the pinned upstream scripts.
+See GitHub's [Windows 2025 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md)
+and Microsoft's [WDK downloads](https://learn.microsoft.com/windows-hardware/drivers/other-wdk-downloads).
+This provisioning script refuses to run outside a GitHub-hosted Windows job.
 
 ## CI and releases
 
@@ -211,24 +237,81 @@ It does not run packaging, compile the native driver, install devices, or run
 XInput validation. A passing restore does not establish that `Program.cs` and
 the upstream resource-pack build succeeded.
 
-Release Please owns version bumps, `vX.Y.Z` tags, changelog updates, and GitHub
+Release Please owns version bumps, `vX.Y.Z` tags, changelogs, and draft GitHub
 releases on `main`, using [its configuration](../release-please-config.json)
 and [manifest](../.release-please-manifest.json). Do not create versions, tags,
-or releases by hand. The `simple` strategy tracks [version.txt](../version.txt)
-and explicitly updates `workspace.package.version` and both workspace packages
-in `Cargo.lock`; the Rust strategy does not support this virtual workspace's
-inherited package versions. The lockfile JSONPath uses `name.value` because
-Release Please's TOML updater wraps scalar values with source-location metadata.
-The [release workflow](../.github/workflows/release-please.yml)
-runs Release Please on hosted Ubuntu. After a release is created, its packaging
-job uses a maintained self-hosted Windows x64 runner labelled
-`hidmaestro-release`, with MSVC/WDK prerequisites, to build and attach the
-unsigned ZIP and checksum.
+or releases by hand. [GoReleaser](../.goreleaser.yaml) packages the staged Windows
+bundle, generates its checksum, and uploads both to the draft. The existing
+PowerShell packager continues to own the native/.NET/Rust build.
 
-The workflow also configures a hosted Ubuntu `publish-crate` job to publish
-`hidmaestro` from the release tag with `cargo publish --package hidmaestro --locked`;
-it needs the `CARGO_REGISTRY_TOKEN` repository secret. Configured jobs do not
-prove that an artifact build or crate publication has occurred. Check actual
-release assets/publication before changing the installation guides to recommend
-downloads or crates.io. The current [setup guide](getting-started.md#build-your-installation)
-therefore leads with a source build.
+`workspace.package.version` is the package/bundle source of truth. Release Please
+uses its `simple` strategy because its Rust updater cannot update this virtual
+workspace with inherited member versions. The generated
+[version marker](../.release-please-version) is release metadata. TOML selectors
+update the workspace version and the `hidmaestro` and `hidmaestro-mcp` entries in
+`Cargo.lock`. The lockfile selector uses `name.value` because
+[Release Please's TOML parser](https://github.com/googleapis/release-please/blob/v17.6.0/src/util/toml-edit.ts)
+wraps scalar values in tagged objects; registry/git dependencies are excluded.
+No lockfile comment markers need to be preserved when Cargo rewrites it.
+
+The [release workflow](../.github/workflows/release-please.yml) has three jobs:
+
+1. **Release Please** opens/updates the release PR. Merging it creates the tag
+   and draft release.
+2. **Package** checks out that tag on GitHub-hosted Windows, checks versions,
+   provisions the native build tools, and runs `package-windows.ps1 -Mode Stage`.
+   It retains the complete staging directory and build logs as workflow artifacts.
+3. **Publish** checks out the same tag on Ubuntu, dry-runs crate publication,
+   and uses GoReleaser to ZIP the staged files and upload the ZIP/checksum to the
+   draft. It publishes `hidmaestro` with Cargo, then publishes the GitHub release.
+
+The Windows job has read-only repository permissions and no publishing token.
+The Ubuntu publication job uses `GITHUB_TOKEN` and the configured
+`CARGO_REGISTRY_TOKEN` with permission to publish `hidmaestro`. Release Please
+and publication stay in one workflow, so a tag push does not need to trigger a
+second workflow. GoReleaser OSS is sufficient; no Pro key is needed.
+
+GoReleaser preserves the existing bundle directory layout and asset names:
+`hidmaestro-rs-X.Y.Z-win-x64.zip` and its `.zip.sha256`. It keeps Release Please's
+release notes and refuses to replace existing assets. It does not rebuild the
+native payload or validate controller behavior. The optional
+[manual Windows smoke workflow](#manual-elevated-smoke-validation) is separate.
+A successful hosted native build and XInput run are still unverified until an
+actual run establishes them; configuration alone is not evidence of success.
+
+### Check release configuration locally
+
+With the configured tools available (`mise install`):
+
+```sh
+goreleaser check
+bash scripts/test-goreleaser.sh
+```
+
+The packaging check uses a disposable local Git repository and staged fixture
+files. It exercises the real GoReleaser configuration, verifies nested runtime
+files survive extraction, and checks the ZIP's SHA-256. It builds no native code
+and skips all publication. Hosted Ubuntu CI runs this check.
+
+On PowerShell 7, `pwsh -File scripts/test-release.ps1` checks workspace/release
+version consistency, tag mismatch rejection, smoke-response parsing, and checksum
+rejection without running the native smoke body. Hosted Windows CI runs it.
+`pwsh -File scripts/check-release-version.ps1 -Tag vX.Y.Z` also validates an
+expected release tag directly. The version check resolves locked Cargo metadata
+and compares workspace versions with Release Please's manifest and version marker.
+
+### Handle a failed release
+
+A failed build stops publication. GoReleaser leaves the release as a draft until
+crate publication succeeds, and build logs are retained for diagnosis. Rerun
+failed jobs for build failures. If assets or the crate were already uploaded,
+inspect the partial release and finish the remaining publication steps manually;
+there is no custom automatic recovery system. Do not move the tag, replace
+published assets, or publish a new version merely to retry a failed step.
+
+GitHub and crates.io cannot be published atomically: the crate may be public if
+the final GitHub publication step fails. In that case, finish publishing the
+existing draft rather than publishing the crate again. Recommend downloads and
+crates.io only after checking actual public assets and the published crate.
+Until then, the [setup guide](getting-started.md#build-your-installation) stays
+source-first.

@@ -199,7 +199,7 @@ Below, **text** means `content: [{"type":"text","text":"…"}]` without
 | `create_controller` | Required `profile_id`; optional nonnegative integer `index`, default next free upstream index | Text containing the new session key. Elevated device creation; loads defaults if no profiles are loaded. An explicit index must be free and fit the bridge's signed 32-bit integer. It is an upstream enumeration index, not a guaranteed XInput slot. A usbip profile can install its backend automatically on creation in the pinned SDK. |
 | `list_controllers` | None | JSON `items` array of `{key, profile_id}` for this bridge session. Supplies structured keys; it is not a system-wide device inventory. |
 | `remove_controller` | Required `controller` key | Text. Disposes/hot-unplugs that controller and removes its cached state. Example: `{"controller":"c1"}`. |
-| `remove_all_controllers` | None | Text. Disposes session devices, then calls upstream system-wide cleanup, including strays and other HIDMaestro devices. The pinned cleanup also attempts to remove HIDMaestro driver packages/configuration. Requires elevation; reserve for deliberately requested broad cleanup. |
+| `remove_all_controllers` | None | Text. Disposes session devices, then calls upstream system-wide cleanup, including strays and other sessions' HIDMaestro devices. The pinned cleanup also attempts to remove HIDMaestro driver packages/configuration. Requires elevation; reserve for deliberately requested broad cleanup. Normally use `reset_controller` and `remove_controller` for each task-owned key. Upstream cleanup is best-effort; success does not prove everything was removed. |
 
 ### Input tools
 

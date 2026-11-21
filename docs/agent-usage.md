@@ -13,6 +13,8 @@ the user the bridge startup step from the setup guide.
 
 Install the driver only when missing as part of the requested setup. Installation
 requires an elevated bridge and sweeps existing HIDMaestro virtual devices.
+The sweep is system-wide, includes other sessions, and runs even when the same
+driver build is already installed.
 Do not reinstall it or install a backend reflexively after an input error.
 Load profiles, inspect candidates, and choose one with `deployable: true` suited
 to the application's input API. `xbox-360-wired` is the simple first choice.
@@ -67,11 +69,12 @@ even if new controllers receive identical key strings.
 Normally finish with `reset_controller` and `remove_controller` for each
 controller created for this task. Reserve `remove_all_controllers` for
 deliberately requested broad cleanup: it affects HIDMaestro devices beyond your
-task and can remove driver packages/configuration. When finished with the whole
-session, use `shutdown`, then close the MCP connection/stdin. The tool stops the
-bridge session but does not itself terminate the MCP input loop. Hard kills do
-not guarantee immediate cleanup; a one-connection broker must be restarted for
-subsequent use.
+task and attempts to remove driver packages/configuration. Upstream cleanup is
+best-effort; tool success does not prove everything was removed. When finished
+with the whole session, use `shutdown`, then close the MCP connection/stdin.
+The tool stops the bridge session but does not itself terminate the MCP input
+loop. Hard kills do not guarantee immediate cleanup; a one-connection broker
+must be restarted for subsequent use.
 
 Details: [human MCP guide](mcp.md), [state and feedback reference](input-reference.md),
 and [troubleshooting](troubleshooting.md).

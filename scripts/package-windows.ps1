@@ -56,8 +56,12 @@ if ($env:OS -ne 'Windows_NT') {
     throw 'Windows packaging requires PowerShell on Windows.'
 }
 
+$workspaceVersion = Get-WorkspaceVersion (Join-Path $repositoryRoot 'Cargo.toml')
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = Get-WorkspaceVersion (Join-Path $repositoryRoot 'Cargo.toml')
+    $Version = $workspaceVersion
+}
+if ($Version -ne $workspaceVersion) {
+    throw "Version '$Version' differs from workspace.package.version '$workspaceVersion'."
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
     throw "Version must be a SemVer-like value, got '$Version'."
@@ -101,6 +105,8 @@ Invoke-Checked 'dotnet' @(
     '--configuration', 'Release',
     '--runtime', 'win-x64',
     '--self-contained', 'true',
+    "-p:Version=$Version",
+    "-p:InformationalVersion=$Version",
     "-p:HMRepoRoot=$HMRepoRoot"
 )
 

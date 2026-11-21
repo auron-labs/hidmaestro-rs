@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: hidmaestro-rs
+
+builds:
+  - skip: true
+
+archives:
+  - meta: true
+    formats: [zip]
+    name_template: '{{ .ProjectName }}-{{ .Version }}-win-x64'
+    wrap_in_directory: true
+    files:
+      - src: 'artifacts/stage/{{ .ProjectName }}-{{ .Version }}-win-x64'
+        dst: .
+
+checksum:
+  algorithm: sha256
+  name_template: '{{ .ProjectName }}-{{ .Version }}-win-x64.zip.sha256'
+
+changelog:
+  disable: true
+
+release:
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: false
+  mode: keep-existing

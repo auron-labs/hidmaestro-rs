@@ -1,4 +1,5 @@
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hidmaestro::HidMaestro;
@@ -30,12 +31,15 @@ fn python() -> &'static str {
 }
 
 fn test_dir() -> std::path::PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        "hm-graceful-shutdown-{}",
+        "hm-graceful-shutdown-{}-{}-{}",
+        std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir(&path).unwrap();
     path

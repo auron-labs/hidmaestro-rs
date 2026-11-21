@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hidmaestro-publication
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -17,7 +21,6 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: actions/checkout@v7
       - uses: googleapis/release-please-action@v5
         id: release
         with:
@@ -27,44 +30,75 @@ jobs:
   package:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    # The upstream native driver build needs the WDK and MSVC toolchain, which
-    # are not available on GitHub-hosted runners. This label identifies a
-    # maintained Windows x64 release runner with those prerequisites.
-    runs-on: [self-hosted, windows, x64, hidmaestro-release]
-    permissions:
-      contents: write
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           submodules: recursive
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - name: Build Windows x64 bundle
-        shell: pwsh
-        run: ./scripts/package-windows.ps1
-      - name: Attach bundle and checksum
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          gh release upload "$env:RELEASE_TAG" artifacts/*.zip artifacts/*.zip.sha256 --clobber
+      - name: Check release versions
+        run: ./scripts/check-release-version.ps1 -Tag "$env:RELEASE_TAG"
+      - name: Prepare Windows driver build tools
+        run: ./scripts/setup-windows-runner.ps1 *>&1 | Tee-Object -FilePath windows-tools.log
+      - name: Stage Windows x64 bundle
+        run: ./scripts/package-windows.ps1 -Mode Stage -Version "$($env:RELEASE_TAG.Substring(1))" *>&1 | Tee-Object -FilePath package.log
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-bundle
+          path: artifacts/stage/
+          if-no-files-found: error
+      - name: Retain build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-diagnostics
+          path: |
+            windows-tools.log
+            package.log
+            ${{ runner.temp }}/hidmaestro-wdk/*.log
 
-  publish-crate:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+  publish:
+    needs: [release-please, package]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - name: Publish hidmaestro to crates.io
+      - run: cargo publish --package hidmaestro --dry-run --locked
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-bundle
+          path: artifacts/stage
+      - name: Package and upload draft assets
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ needs.release-please.outputs.tag_name }}
+      - name: Publish Rust crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --package hidmaestro --locked
+      - name: Publish GitHub release
+        run: gh release edit "$RELEASE_TAG" --draft=false
