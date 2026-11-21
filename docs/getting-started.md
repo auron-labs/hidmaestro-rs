@@ -71,7 +71,7 @@ git submodule update --init --recursive
 git submodule status
 ```
 
-The pinned HIDMaestro commit is `942e25aa9ce4e93dc601f59a796f7432809fc41b`.
+The pinned HIDMaestro version is v2.1.0 (`c28c1f640d89038154b0962ae01627e0cda37cb0`).
 From the repository root, build and stage:
 
 ```powershell
@@ -107,8 +107,15 @@ self-signed `HIDMaestroTestCert` when absent, stores it in `LocalMachine\My`,
 and adds the new certificate to `LocalMachine\Root` and
 `LocalMachine\TrustedPublisher`. It signs/catalogs the extracted driver and
 installs it through Windows. This does not sign or authenticate the bundle.
-Installation also sweeps existing HIDMaestro virtual devices before deployment;
-do it as setup, not as a routine response to an input error.
+Installation may reclaim orphaned devices; do it as setup, not as a routine
+response to an input error. It leaves devices owned by running HIDMaestro 2.x
+programs in place. Upgrade other HIDMaestro 1.x programs before running them
+alongside this bundle: a 1.x install or first create can remove 2.x devices.
+
+When creating a controller, the bridge tries its previous Windows device
+identity first. If another running controller already owns that identity, it
+uses a free one instead. An app that saved a Windows device path may need to
+rebind the controller in that case.
 
 ## Run the bridge as Administrator
 

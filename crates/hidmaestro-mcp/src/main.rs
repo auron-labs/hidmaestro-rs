@@ -857,7 +857,7 @@ fn tools() -> Value {
         },
         {
             "name": "install_driver",
-            "description": "Install/sign the HIDMaestro UMDF2 driver through an elevated bridge. First sweeps HIDMaestro virtual devices system-wide, including other sessions, even when the same driver build is already installed. Use only for requested setup when the driver is missing.",
+            "description": "Install/sign the HIDMaestro UMDF2 driver through an elevated bridge. May reclaim orphaned devices but leaves devices owned by running HIDMaestro 2.x programs in place. Use only for requested driver setup.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
@@ -891,7 +891,7 @@ fn tools() -> Value {
             "description": "Create a virtual controller from a profile id (e.g. 'xbox-360-wired', 'dualsense').",
             "inputSchema": {"type": "object", "required": ["profile_id"], "properties": {
                 "profile_id": {"type": "string"},
-                "index": {"type": "integer", "description": "Optional enumeration slot"}
+                "index": {"type": "integer", "description": "Optional bridge session slot, not a Windows XInput slot"}
             }}
         },
         {

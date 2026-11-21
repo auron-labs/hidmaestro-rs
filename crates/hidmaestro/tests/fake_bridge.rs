@@ -2,6 +2,7 @@
 //! (a Python NDJSON responder), so the crate is testable off-Windows.
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hidmaestro::{Buttons, GamepadState, Hat, HidMaestro};
@@ -36,24 +37,26 @@ for line in sys.stdin:
     else: resp(ok=False, error=f"unknown method {m}")
 "#;
 
-fn fake_bridge() -> String {
+fn fake_bridge(contents: &str) -> String {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "hm-fake-bridge-{}-{}",
+        "hm-fake-bridge-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir(&dir).unwrap();
     let script = dir.join("fake_bridge.py");
-    std::fs::write(&script, FAKE).unwrap();
+    std::fs::write(&script, contents).unwrap();
     script.to_string_lossy().into_owned()
 }
 
 #[test]
 fn rpc_roundtrip_against_fake_bridge() {
-    let script = fake_bridge();
+    let script = fake_bridge(FAKE);
     let python = ["python3", "python"]
         .iter()
         .copied()
@@ -110,9 +113,7 @@ fn rpc_roundtrip_against_fake_bridge() {
 
 #[test]
 fn output_event_flood_does_not_block_the_rpc_response() {
-    let script = fake_bridge();
-    std::fs::write(
-        &script,
+    let script = fake_bridge(
         r#"
 import json, sys
 for line in sys.stdin:
@@ -123,8 +124,7 @@ for line in sys.stdin:
     if req["method"] == "shutdown":
         break
 "#,
-    )
-    .unwrap();
+    );
     let python = ["python3", "python"]
         .iter()
         .copied()
@@ -152,9 +152,7 @@ for line in sys.stdin:
 
 #[test]
 fn failed_tap_release_keeps_the_last_confirmed_pressed_state() {
-    let script = fake_bridge();
-    std::fs::write(
-        &script,
+    let script = fake_bridge(
         r#"
 import json, sys
 submissions = 0
@@ -173,8 +171,7 @@ for line in sys.stdin:
     else:
         print(json.dumps({"id": req["id"], "ok": True, "result": None}), flush=True)
 "#,
-    )
-    .unwrap();
+    );
     let python = ["python3", "python"]
         .iter()
         .copied()

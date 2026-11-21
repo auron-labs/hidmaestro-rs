@@ -251,9 +251,15 @@ JsonNode? Dispatch(string method, JsonObject p)
             return null;
 
         case "load_profiles":
-            return p["dir"] is JsonNode d
+        {
+            var previousIssueCount = ctx.ProfileLoadIssues.Count;
+            var loaded = p["dir"] is JsonNode d
                 ? ctx.LoadProfilesFromDirectory(d.GetValue<string>())
                 : ctx.LoadDefaultProfiles();
+            foreach (var issue in ctx.ProfileLoadIssues.Skip(previousIssueCount))
+                Console.Error.WriteLine($"hidmaestro-bridge: profile {issue.Kind}: {issue}");
+            return loaded;
+        }
 
         case "list_profiles":
             return new JsonArray(ctx.AllProfiles.Select(p => (JsonNode)ProfileJson(p)).ToArray());
@@ -272,9 +278,21 @@ JsonNode? Dispatch(string method, JsonObject p)
             var profile = ctx.GetProfile(profileId)
                 ?? throw new ArgumentException($"profile '{profileId}' not found");
             var key = $"c{++nextKey}";
-            HMController ctrl = p["index"] is JsonNode idx
-                ? ctx.CreateControllerAt(idx.GetValue<int>(), profile, key)
-                : ctx.CreateController(profile, key);
+            int? index = p["index"]?.GetValue<int>();
+            HMController Create(string? identityKey) => index is int slot
+                ? ctx.CreateControllerAt(slot, profile, identityKey)
+                : ctx.CreateController(profile, identityKey);
+
+            HMController ctrl;
+            try
+            {
+                ctrl = Create(key);
+            }
+            catch (HMResourceInUseException error) when (error.Resource == $"identity key '{key}'")
+            {
+                // Keep legacy device paths when free; another bridge may already own this identity.
+                ctrl = Create(null);
+            }
             controllers[key] = ctrl;
             HookEvents(ctrl, key);
             return new JsonObject { ["key"] = key, ["profile_id"] = profileId };
@@ -300,7 +318,7 @@ JsonNode? Dispatch(string method, JsonObject p)
             foreach (var controller in controllers.Values)
                 controller.Dispose();
             controllers.Clear();
-            HMContext.RemoveAllVirtualControllers();
+            HMContext.RemoveAllVirtualControllers(HMCleanupScope.Everything, preserveInstall: false);
             return null;
 
         case "submit_state":

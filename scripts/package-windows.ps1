@@ -93,22 +93,29 @@ $stageDirectory = Join-Path $stageRoot $bundleName
 $bridgePublishDirectory = Join-Path $repositoryRoot 'bridge\HIDMaestro.Bridge\bin\Release\net10.0-windows10.0.26100.0\win-x64\publish'
 $mcpExecutable = Join-Path $repositoryRoot 'target\release\hidmaestro-mcp.exe'
 
-if (-not $SkipUpstreamBuild) {
-    Write-Host 'Building the pinned HIDMaestro driver and SDK payload...'
-    Invoke-Checked $upstreamBuild @()
-}
+# The SDK starts Windows PowerShell indirectly; don't pass it PowerShell 7's modules.
+$modulePath = $env:PSModulePath
+try {
+    $env:PSModulePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+    if (-not $SkipUpstreamBuild) {
+        Write-Host 'Building the pinned HIDMaestro driver and SDK payload...'
+        Invoke-Checked $upstreamBuild @()
+    }
 
-Write-Host 'Publishing the self-contained bridge...'
-Invoke-Checked 'dotnet' @(
-    'publish',
-    (Join-Path $repositoryRoot 'bridge\HIDMaestro.Bridge\HIDMaestro.Bridge.csproj'),
-    '--configuration', 'Release',
-    '--runtime', 'win-x64',
-    '--self-contained', 'true',
-    "-p:Version=$Version",
-    "-p:InformationalVersion=$Version",
-    "-p:HMRepoRoot=$HMRepoRoot"
-)
+    Write-Host 'Publishing the self-contained bridge...'
+    Invoke-Checked 'dotnet' @(
+        'publish',
+        (Join-Path $repositoryRoot 'bridge\HIDMaestro.Bridge\HIDMaestro.Bridge.csproj'),
+        '--configuration', 'Release',
+        '--runtime', 'win-x64',
+        '--self-contained', 'true',
+        "-p:Version=$Version",
+        "-p:InformationalVersion=$Version",
+        "-p:HMRepoRoot=$HMRepoRoot"
+    )
+} finally {
+    $env:PSModulePath = $modulePath
+}
 
 Write-Host 'Building hidmaestro-mcp...'
 Invoke-Checked 'cargo' @(

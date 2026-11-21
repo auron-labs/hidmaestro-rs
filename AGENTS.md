@@ -83,8 +83,9 @@ just to validate a snippet. JSON examples should agree with schemas and handlers
 Respect the requested task and preserve existing user changes. Do not install
 drivers, run broad device cleanup, or trigger the host-mutating smoke workflow
 for an ordinary coding/documentation task. `remove_all_controllers` reaches
-system-wide upstream cleanup, including driver package/configuration removal;
-installation also sweeps devices. Use a dedicated host for intentional native work.
+system-wide upstream cleanup, including attempted driver package/configuration
+removal. Driver installation may reclaim orphaned devices. Use a dedicated
+host for intentional native work.
 
 Follow existing repository patterns; avoid adding a documentation framework or
 extra approval/checkpoint machinery for routine work. Release Please owns

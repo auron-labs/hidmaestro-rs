@@ -71,6 +71,10 @@ with `{}`, then `list_profiles` with an appropriate substring filter.
 **Fix:** use the exact `id` returned by that catalog. Inspect it with
 `get_profile`; use the separately returned controller key for input operations.
 Custom `dir` paths are resolved by the bridge; use an absolute Windows path.
+HIDMaestro v2.1 validates custom profiles strictly. Check the bridge's stderr
+for the file, JSON path and rejection reason, and consult the
+[upstream migration guide](https://github.com/hifihedgehog/HIDMaestro/blob/v2.1.0/docs/MIGRATION.md#profile-json)
+when updating a 1.x profile.
 See [profile concepts](input-reference.md#choose-a-profile-and-keep-its-controller-key).
 
 ## A profile cannot be deployed or needs usbip

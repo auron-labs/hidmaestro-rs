@@ -542,8 +542,8 @@ impl HidMaestro {
     }
 
     /// Extract, sign, and install the UMDF2 driver package through an elevated
-    /// bridge. First sweeps HIDMaestro virtual devices system-wide, including
-    /// other sessions, even if the same driver build is already installed.
+    /// bridge. May reclaim orphaned HIDMaestro devices, but leaves devices
+    /// owned by running HIDMaestro 2.x programs in place.
     /// Call only for requested setup when [`Self::is_driver_installed`] is false.
     pub fn install_driver(&mut self) -> Result<()> {
         self.rpc("install_driver", None::<()>)?;
@@ -557,7 +557,7 @@ impl HidMaestro {
         Ok(())
     }
 
-    /// Load the built-in profile catalog (~230 controllers).
+    /// Load the built-in profile catalog.
     pub fn load_default_profiles(&mut self) -> Result<usize> {
         let v = self.rpc("load_profiles", None::<()>)?;
         Ok(v.as_u64().unwrap_or(0) as usize)
@@ -595,7 +595,8 @@ impl HidMaestro {
     /// Create a virtual controller from a profile id (e.g.
     /// `"xbox-360-wired"`, `"dualsense"`, `"switch-pro"`). Returns its key.
     ///
-    /// `index` pins the controller to an enumeration slot; `None` appends.
+    /// `index` selects a slot in the bridge session, not a Windows XInput
+    /// slot. `None` uses the first free session slot.
     /// Use [`HidMaestro::controller`] to drive it.
     pub fn create_controller(&mut self, profile_id: &str, index: Option<usize>) -> Result<String> {
         #[derive(Serialize)]
