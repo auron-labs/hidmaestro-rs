@@ -15,5 +15,5 @@ updates:
     patterns: ["*"]
   - package-ecosystem: gitsubmodule
     directory: /
-    multi-ecosystem-group: dependencies
-    patterns: ["*"]
+    schedule:
+      interval: weekly
